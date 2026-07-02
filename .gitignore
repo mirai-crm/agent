@@ -8,5 +8,12 @@
 # Local config with secrets
 config.toml
 
+# testprint diagnostic artifacts
+/testprint.png
+/testprint.escpos.bin
+
+# Cursor local session data
+.cursor/
+
 # OS/editor
 .DS_Store

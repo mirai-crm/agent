@@ -204,11 +204,14 @@ func (c *Client) Ping(ctx context.Context) (PingResponse, error) {
 }
 
 // FetchPNG downloads a print-ready PNG for the given document path (e.g.
-// "/api/v1/devices/checks/8842/png"), requesting mono raster and optional scale.
-// Returns the raw PNG bytes.
-func (c *Client) FetchPNG(ctx context.Context, path string, scale int) ([]byte, error) {
+// "/api/v1/devices/checks/8842/png"). It selects the paper width (58/80 mm) so
+// the server lays the document out for the native head width, and optionally
+// requests super-sampling via scale. Returns the raw PNG bytes.
+func (c *Client) FetchPNG(ctx context.Context, path string, widthMM, scale int) ([]byte, error) {
 	q := url.Values{}
-	q.Set("mono", "1")
+	if widthMM > 0 {
+		q.Set("width", strconv.Itoa(widthMM))
+	}
 	if scale > 0 {
 		q.Set("scale", strconv.Itoa(scale))
 	}

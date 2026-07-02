@@ -90,6 +90,24 @@ const (
 	KindUSB            = "usb"
 )
 
+// Supported paper widths in millimetres (server ?width param): 58mm → 384 dots,
+// 80mm → 576 dots.
+const (
+	PaperWidth58mm = 58
+	PaperWidth80mm = 80
+)
+
+// PaperWidthMM maps the printer head width in dots to the paper width in mm
+// expected by the server's ?width query parameter. Anything wide enough for an
+// 80mm head (≈576 dots) reports 80; everything else reports 58.
+func (d DeviceConfig) PaperWidthMM() int {
+	// Midpoint between the 58mm (384) and 80mm (576) native widths.
+	if d.WidthDots >= 480 {
+		return PaperWidth80mm
+	}
+	return PaperWidth58mm
+}
+
 // Durations derived from the numeric config fields.
 
 func (p PollConfig) Timeout() time.Duration { return time.Duration(p.TimeoutSeconds) * time.Second }

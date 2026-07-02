@@ -40,7 +40,9 @@ token = "dev_live_a1b2c3d4e5f6..."
 id = 42
 name = "Kassa #1"
 width_dots = 576      # 58mm ~= 384, 80mm ~= 576
-png_scale = 0         # 0 => do not send ?scale
+png_scale = 0         # server super-sampling for sharper output: PNG rendered at
+                      # width_dots x png_scale, then resampled (aspect-preserving,
+                      # anti-aliased) to the head width. 0/1 = native; 3-4 = crisper.
 
   [devices.printer]
   kind = "windows_spooler"   # windows_spooler | cups_raw | dev_lp | usb

@@ -10,6 +10,7 @@ import (
 	"image/draw"
 	_ "image/png" // register PNG decoder
 	"io"
+	"math"
 )
 
 // ESC/POS control bytes.
@@ -40,8 +41,11 @@ type Options struct {
 // DefaultOptions returns options for the given head width.
 func DefaultOptions(widthDots int) Options {
 	return Options{
-		WidthDots:  widthDots,
-		FeedLines:  4,
+		WidthDots: widthDots,
+		// Feed enough blank lines past the print head so the whole receipt
+		// (incl. the footer) clears the cutter before the partial cut. Each LF
+		// ≈ 1/6" (~4.2mm) at the default post-ESC @ line spacing.
+		FeedLines:  8,
 		BandHeight: 128,
 		Threshold:  128,
 	}
@@ -132,9 +136,13 @@ func (m *packedMono) row(y int) []byte {
 	return m.data[y*m.widthBytes : (y+1)*m.widthBytes]
 }
 
-// binarize converts src to a packed 1bpp bitmap fitted to widthDots. Wider
-// images are cropped to widthDots; narrower ones are left-aligned with white
-// padding on the right.
+// binarize converts src to a packed 1bpp bitmap fitted to widthDots, preserving
+// the source aspect ratio. The server renders super-sampled PNGs (scale>1) at
+// widthDots*scale wide AND scale× taller, so we must resample BOTH axes: the
+// output width is widthDots and the output height is scaled by the same factor
+// (srcH*widthDots/srcW). Each output dot is the box-average of the source pixels
+// it covers, then thresholded — anti-aliasing the resize instead of cropping or
+// (for the height) leaving it stretched. Equal-width images map 1:1.
 func binarize(src image.Image, widthDots int, threshold uint8) *packedMono {
 	b := src.Bounds()
 	// Normalise to an NRGBA-ish accessor via draw into RGBA for fast pixel reads.
@@ -142,28 +150,67 @@ func binarize(src image.Image, widthDots int, threshold uint8) *packedMono {
 	draw.Draw(rgba, rgba.Bounds(), src, b.Min, draw.Src)
 
 	srcW := b.Dx()
-	height := b.Dy()
+	srcH := b.Dy()
 	widthBytes := (widthDots + 7) / 8
+	if srcW <= 0 || srcH <= 0 {
+		return &packedMono{widthDots: widthDots, widthBytes: widthBytes}
+	}
+
+	// Output height preserves the source aspect ratio at the target width.
+	outH := srcH
+	if srcW != widthDots {
+		outH = int(math.Round(float64(srcH) * float64(widthDots) / float64(srcW)))
+		if outH < 1 {
+			outH = 1
+		}
+	}
+
 	m := &packedMono{
 		widthDots:  widthDots,
 		widthBytes: widthBytes,
-		height:     height,
-		data:       make([]byte, widthBytes*height),
+		height:     outH,
+		data:       make([]byte, widthBytes*outH),
 	}
-	for y := 0; y < height; y++ {
-		rowOff := y * widthBytes
-		for x := 0; x < widthDots && x < srcW; x++ {
-			i := rgba.PixOffset(x, y)
-			r := rgba.Pix[i]
-			g := rgba.Pix[i+1]
-			bl := rgba.Pix[i+2]
-			a := rgba.Pix[i+3]
-			// Treat fully/again transparent as white.
-			lum := luminance(r, g, bl)
-			if a < 128 {
-				lum = 255
+	for y := 0; y < outH; y++ {
+		// Source row range covered by output row y.
+		y0 := y
+		y1 := y + 1
+		if srcH != outH {
+			y0 = y * srcH / outH
+			y1 = (y + 1) * srcH / outH
+			if y1 <= y0 {
+				y1 = y0 + 1
 			}
-			if lum < threshold {
+		}
+		rowOff := y * widthBytes
+		for x := 0; x < widthDots; x++ {
+			// Source column range covered by output dot x.
+			x0 := x
+			x1 := x + 1
+			if srcW != widthDots {
+				x0 = x * srcW / widthDots
+				x1 = (x + 1) * srcW / widthDots
+				if x1 <= x0 {
+					x1 = x0 + 1
+				}
+			}
+			var sum, cnt int
+			for sy := y0; sy < y1 && sy < srcH; sy++ {
+				rowBase := sy * rgba.Stride
+				for sx := x0; sx < x1 && sx < srcW; sx++ {
+					i := rowBase + sx*4
+					lum := int(luminance(rgba.Pix[i], rgba.Pix[i+1], rgba.Pix[i+2]))
+					if rgba.Pix[i+3] < 128 { // transparent => white
+						lum = 255
+					}
+					sum += lum
+					cnt++
+				}
+			}
+			if cnt == 0 {
+				continue // past the source edge: leave white (padding)
+			}
+			if sum/cnt < int(threshold) {
 				m.data[rowOff+(x>>3)] |= 0x80 >> uint(x&7)
 			}
 		}

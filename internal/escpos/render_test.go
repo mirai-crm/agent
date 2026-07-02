@@ -52,6 +52,28 @@ func TestRenderEmitsInitRasterAndCut(t *testing.T) {
 	}
 }
 
+func TestRenderDownscalesWideImagePreservingAspect(t *testing.T) {
+	// A super-sampled 16x4 all-black image (2x the 8-dot head) must downscale to
+	// 8 wide AND 2 tall — the height is halved by the same factor as the width,
+	// so the aspect ratio is preserved (not left stretched at 4 rows).
+	data := makePNG(t, 16, 4)
+	var out bytes.Buffer
+	opt := Options{WidthDots: 8, FeedLines: 0, BandHeight: 0, Threshold: 128}
+	if err := Render(&out, data, opt); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	b := out.Bytes()
+	// Header: 1 byte/row, height 2 (4 -> 2, matching the 16 -> 8 width ratio).
+	want := []byte{0x1D, 0x76, 0x30, 0x00, 0x01, 0x00, 0x02, 0x00}
+	if !bytes.Contains(b, want) {
+		t.Fatalf("missing aspect-preserving GS v 0 header % x in % x", want, b)
+	}
+	// Both output rows fully black after averaging the black source.
+	if !bytes.Contains(b, []byte{0xFF, 0xFF}) {
+		t.Fatalf("expected two 0xFF rows in % x", b)
+	}
+}
+
 func TestRenderBandingSplitsBlocks(t *testing.T) {
 	data := makePNG(t, 8, 10)
 	var out bytes.Buffer

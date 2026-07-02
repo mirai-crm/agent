@@ -243,14 +243,15 @@ func (w *deviceWorker) execute(ctx context.Context, t api.Task) error {
 
 // printDocument downloads the PNG, renders ESC/POS, and writes it to the printer.
 func (w *deviceWorker) printDocument(ctx context.Context, pngPath string) error {
-	png, err := w.client.FetchPNG(ctx, pngPath, w.dev.PNGScale)
+	png, err := w.client.FetchPNG(ctx, pngPath, w.dev.PaperWidthMM(), w.dev.PNGScale)
 	if err != nil {
 		// 404 is permanent; other API errors classified by isTransient.
 		return err
 	}
 
 	var buf bytes.Buffer
-	if err := escpos.Render(&buf, png, escpos.DefaultOptions(w.dev.WidthDots)); err != nil {
+	opt := escpos.DefaultOptions(w.dev.WidthDots)
+	if err := escpos.Render(&buf, png, opt); err != nil {
 		// A decode/render failure on a fetched document is permanent.
 		return permanent(err)
 	}
