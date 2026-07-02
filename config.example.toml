@@ -1,0 +1,78 @@
+# Example escpos-agent configuration. Copy to the platform config path and edit.
+# The real file contains device secret tokens and must be chmod 0600.
+
+[server]
+# CRM base URL (host). All API paths are relative to it. Use HTTPS in prod.
+base_url = "https://crm.example.com"
+
+[poll]
+# Long-poll window seconds for GET /tasks (server clamps to [0, 30]).
+timeout_seconds = 25
+# Max tasks per poll (server clamps to [1, 10]).
+batch_size = 10
+
+[ping]
+interval_seconds = 30
+
+[http]
+request_timeout_seconds = 20
+# Must exceed poll.timeout_seconds so the client does not cut long-poll early.
+longpoll_timeout_seconds = 40
+
+[retry]
+# Local retry policy (no server-side retries exist).
+max_attempts = 3
+initial_backoff_ms = 500
+max_backoff_ms = 10000
+backoff_multiplier = 2.0
+network_backoff_ms = 2000
+network_backoff_max_ms = 30000
+
+[log]
+level = "info"
+# Empty -> stderr / service journal.
+path = ""
+
+# ── Devices: one block per token = one physical printer ──────────────────────
+
+[[devices]]
+token = "dev_live_a1b2c3d4e5f6..."
+id = 42
+name = "Kassa #1"
+width_dots = 576      # 58mm ~= 384, 80mm ~= 576
+png_scale = 0         # 0 => do not send ?scale
+
+  [devices.printer]
+  kind = "windows_spooler"   # windows_spooler | cups_raw | dev_lp | usb
+  spooler_name = "XP-58 (RAW)"
+
+[[devices]]
+token = "dev_live_9z8y7x..."
+id = 43
+name = "Warehouse printer"
+width_dots = 384
+png_scale = 0
+
+  [devices.printer]
+  kind = "dev_lp"
+  path = "/dev/usb/lp0"
+
+# [[devices]]
+# token = "dev_live_..."
+# id = 44
+# name = "Point #2"
+# width_dots = 576
+#   [devices.printer]
+#   kind = "cups_raw"
+#   queue = "thermal_raw"
+
+# [[devices]]
+# token = "dev_live_..."
+# id = 45
+# name = "Mobile POS"
+# width_dots = 384
+#   [devices.printer]
+#   kind = "usb"
+#   vendor_id  = "0x0416"
+#   product_id = "0x5011"
+#   # serial = "..."

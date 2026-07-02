@@ -1,0 +1,12 @@
+# Binaries
+/escpos-agent
+/escpos-agent.exe
+*.exe
+*.test
+*.out
+
+# Local config with secrets
+config.toml
+
+# OS/editor
+.DS_Store
