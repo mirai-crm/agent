@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mirai-agent/escpos-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
 // Printer is a platform-independent receiver of ESC/POS bytes.

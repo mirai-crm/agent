@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mirai-agent/escpos-agent/internal/api"
-	"github.com/mirai-agent/escpos-agent/internal/config"
-	"github.com/mirai-agent/escpos-agent/internal/printer"
+	"github.com/mirai-agent/mirai-agent/internal/api"
+	"github.com/mirai-agent/mirai-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/printer"
 )
 
 // Exit codes surfaced to the CLI (mirrors spec §5.3).
@@ -289,9 +289,9 @@ func TestPrint(ctx context.Context, pc config.PrinterConfig) error {
 	if err := p.Open(ctx); err != nil {
 		return err
 	}
-	// ESC @ init, text "escpos-agent OK", feed, partial cut.
+	// ESC @ init, text "mirai-agent OK", feed, partial cut.
 	data := []byte{0x1B, 0x40}
-	data = append(data, []byte("escpos-agent test print OK\n")...)
+	data = append(data, []byte("mirai-agent test print OK\n")...)
 	data = append(data, []byte{0x0A, 0x0A, 0x0A, 0x0A}...)
 	data = append(data, []byte{0x1D, 0x56, 0x01}...)
 	if err := printer.WriteChunked(p, data); err != nil {

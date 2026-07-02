@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mirai-agent/escpos-agent/internal/api"
-	"github.com/mirai-agent/escpos-agent/internal/config"
-	"github.com/mirai-agent/escpos-agent/internal/escpos"
-	"github.com/mirai-agent/escpos-agent/internal/logx"
-	"github.com/mirai-agent/escpos-agent/internal/printer"
+	"github.com/mirai-agent/mirai-agent/internal/api"
+	"github.com/mirai-agent/mirai-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/escpos"
+	"github.com/mirai-agent/mirai-agent/internal/logx"
+	"github.com/mirai-agent/mirai-agent/internal/printer"
 )
 
 // Manager runs one deviceWorker per configured device.

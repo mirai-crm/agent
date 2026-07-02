@@ -1,9 +1,9 @@
-# escpos-agent
+# mirai-agent
 
 Cross-platform Go agent that prints CRM receipts and Z-reports on ESC/POS thermal
 printers. It polls the CRM device API (long-poll), downloads the server-rendered
 PNG, converts it to an ESC/POS raster stream (`GS v 0`), prints it, and reports
-the result back. See [go-escpos-agent-spec.md](go-escpos-agent-spec.md) for the
+the result back. See [go-mirai-agent-spec.md](go-mirai-agent-spec.md) for the
 full specification.
 
 ## Features
@@ -28,31 +28,31 @@ full specification.
 
 ```bash
 # Native (enables the USB backend if libusb is present):
-CGO_ENABLED=1 go build -o escpos-agent ./cmd/agent
+CGO_ENABLED=1 go build -o mirai-agent ./cmd/agent
 
 # Without USB (no cgo/libusb needed):
-CGO_ENABLED=0 go build -o escpos-agent ./cmd/agent
+CGO_ENABLED=0 go build -o mirai-agent ./cmd/agent
 ```
 
 ## Usage
 
 ```bash
 # First run: discover devices by token, bind printers, write config, install service.
-sudo ./escpos-agent setup \
+sudo ./mirai-agent setup \
   --api-url https://crm.example.com \
   --token dev_live_a1b2... --token dev_live_9z8y...
 
 # Non-interactive binding:
-sudo ./escpos-agent setup --api-url https://crm.example.com --yes \
+sudo ./mirai-agent setup --api-url https://crm.example.com --yes \
   --token dev_live_a1b2... --printer 42=cups_raw:thermal_raw
 
 # Run in foreground (usually started by the service):
-./escpos-agent run --config /etc/escpos-agent/config.toml
+./mirai-agent run --config /etc/mirai-agent/config.toml
 
 # Service management and status:
-sudo ./escpos-agent install
-sudo ./escpos-agent uninstall
-./escpos-agent status
+sudo ./mirai-agent install
+sudo ./mirai-agent uninstall
+./mirai-agent status
 ```
 
 Printer refs for `--printer deviceRef=printerRef` (deviceRef = device id or name):
@@ -69,9 +69,9 @@ Printer refs for `--printer deviceRef=printerRef` (deviceRef = device id or name
 See [config.example.toml](config.example.toml). The config file stores device
 secret tokens and is written with `0600` permissions. Default paths:
 
-- Linux: `/etc/escpos-agent/config.toml`
-- Windows: `C:\ProgramData\escpos-agent\config.toml`
-- macOS: `/Library/Application Support/escpos-agent/config.toml`
+- Linux: `/etc/mirai-agent/config.toml`
+- Windows: `C:\ProgramData\mirai-agent\config.toml`
+- macOS: `/Library/Application Support/mirai-agent/config.toml`
 
 ## Exit codes
 

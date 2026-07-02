@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/alexbrainman/printer"
-	"github.com/mirai-agent/escpos-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
 // windowsSpooler prints raw ESC/POS bytes through the Windows spooler, bypassing
@@ -29,7 +29,7 @@ func (w *windowsSpooler) Open(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("open spooler %q: %w", w.name, err)
 	}
-	if err := p.StartRawDocument("escpos-agent receipt"); err != nil {
+	if err := p.StartRawDocument("mirai-agent receipt"); err != nil {
 		p.Close()
 		return fmt.Errorf("start raw document: %w", err)
 	}

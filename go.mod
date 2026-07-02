@@ -1,4 +1,4 @@
-module github.com/mirai-agent/escpos-agent
+module github.com/mirai-agent/mirai-agent
 
 go 1.23.0
 

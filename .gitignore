@@ -1,6 +1,6 @@
 # Binaries
-/escpos-agent
-/escpos-agent.exe
+/mirai-agent
+/mirai-agent.exe
 *.exe
 *.test
 *.out

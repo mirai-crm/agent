@@ -5,7 +5,7 @@ package bootstrap
 import (
 	"github.com/alexbrainman/printer"
 
-	"github.com/mirai-agent/escpos-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
 func discoverSpooler() []PrinterOption {

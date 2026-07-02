@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mirai-agent/escpos-agent/internal/config"
-	"github.com/mirai-agent/escpos-agent/internal/logx"
+	"github.com/mirai-agent/mirai-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/logx"
 )
 
 // Version is set at build time via -ldflags "-X main.Version=...".
@@ -37,7 +37,7 @@ func run(args []string) int {
 	// Top-level version/help.
 	switch args[0] {
 	case "--version", "-version", "version":
-		fmt.Println("escpos-agent", Version)
+		fmt.Println("mirai-agent", Version)
 		return exitOK
 	case "--help", "-h", "help":
 		usage()
@@ -65,7 +65,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `escpos-agent — ESC/POS print agent for CRM
+	fmt.Fprint(os.Stderr, `mirai-agent — ESC/POS print agent for CRM
 
 Usage:
   agent setup --api-url URL --token T1 [--token T2 ...] [--printer ref] [--no-service] [--yes]

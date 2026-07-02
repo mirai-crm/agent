@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mirai-agent/escpos-agent/internal/bootstrap"
-	"github.com/mirai-agent/escpos-agent/internal/config"
-	"github.com/mirai-agent/escpos-agent/internal/logx"
-	"github.com/mirai-agent/escpos-agent/internal/svc"
+	"github.com/mirai-agent/mirai-agent/internal/bootstrap"
+	"github.com/mirai-agent/mirai-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/logx"
+	"github.com/mirai-agent/mirai-agent/internal/svc"
 )
 
 // commonFlags registers --config and --log-level on a FlagSet.

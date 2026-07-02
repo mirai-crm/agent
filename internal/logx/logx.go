@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mirai-agent/escpos-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
 // Setup builds a slog.Logger from the log config. When path is empty logs go to

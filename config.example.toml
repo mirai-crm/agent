@@ -1,4 +1,4 @@
-# Example escpos-agent configuration. Copy to the platform config path and edit.
+# Example mirai-agent configuration. Copy to the platform config path and edit.
 # The real file contains device secret tokens and must be chmod 0600.
 
 [server]

@@ -62,7 +62,7 @@ type Config struct {
 func New(cfg Config) *Client {
 	ua := cfg.UserAgent
 	if ua == "" {
-		ua = "escpos-agent"
+		ua = "mirai-agent"
 	}
 	return &Client{
 		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),

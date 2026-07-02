@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/mirai-agent/escpos-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
 // PrinterOption is a discovered candidate the operator can pick during setup.

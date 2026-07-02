@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 
-	"github.com/mirai-agent/escpos-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
 // cupsRawPrinter buffers the ESC/POS job and pipes it to a CUPS raw queue via

@@ -10,12 +10,12 @@ import (
 
 	"github.com/kardianos/service"
 
-	"github.com/mirai-agent/escpos-agent/internal/config"
-	"github.com/mirai-agent/escpos-agent/internal/worker"
+	"github.com/mirai-agent/mirai-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/worker"
 )
 
 const (
-	serviceName        = "EscposAgent"
+	serviceName        = "MiraiAgent"
 	serviceDisplayName = "ESC/POS Device Agent (CRM)"
 	serviceDescription = "Polls the CRM task queue and prints receipts/Z-reports on ESC/POS thermal printers."
 )

@@ -141,11 +141,11 @@ func DefaultPath() string {
 		if programData == "" {
 			programData = `C:\ProgramData`
 		}
-		return filepath.Join(programData, "escpos-agent", "config.toml")
+		return filepath.Join(programData, "mirai-agent", "config.toml")
 	case "darwin":
-		return "/Library/Application Support/escpos-agent/config.toml"
+		return "/Library/Application Support/mirai-agent/config.toml"
 	default:
-		return "/etc/escpos-agent/config.toml"
+		return "/etc/mirai-agent/config.toml"
 	}
 }
 

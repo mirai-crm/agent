@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mirai-agent/escpos-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
 // devLPPrinter writes ESC/POS bytes to a character device such as /dev/usb/lp0.
