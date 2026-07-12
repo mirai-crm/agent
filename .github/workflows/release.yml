@@ -1,0 +1,163 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - run: go vet ./...
+
+  build-linux:
+    needs: test
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install libusb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BASE="mirai-agent_${VERSION}_linux_${GOARCH}"
+          mkdir -p "dist/${BASE}"
+          go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" \
+            -o "dist/${BASE}/mirai-agent" ./cmd/agent
+          cp README.md AGENTS.md config.example.toml "dist/${BASE}/"
+          tar -czf "dist/${BASE}.tar.gz" -C dist "${BASE}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mirai-agent_linux_${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-macos:
+    needs: test
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: macos-15-intel
+            goarch: amd64
+          - runner: macos-15
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install libusb
+        run: brew install libusb pkg-config
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig"
+          VERSION="${GITHUB_REF_NAME#v}"
+          BASE="mirai-agent_${VERSION}_darwin_${GOARCH}"
+          mkdir -p "dist/${BASE}"
+          go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" \
+            -o "dist/${BASE}/mirai-agent" ./cmd/agent
+          cp README.md AGENTS.md config.example.toml "dist/${BASE}/"
+          tar -czf "dist/${BASE}.tar.gz" -C dist "${BASE}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mirai-agent_darwin_${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    needs: test
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-libusb
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: amd64
+          CC: gcc
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BASE="mirai-agent_${VERSION}_windows_amd64"
+          mkdir -p "dist/${BASE}"
+          go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" \
+            -o "dist/${BASE}/mirai-agent.exe" ./cmd/agent
+          cp /mingw64/bin/libusb-1.0.dll "dist/${BASE}/"
+          cp README.md AGENTS.md config.example.toml "dist/${BASE}/"
+          cd dist && zip -r "${BASE}.zip" "${BASE}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mirai-agent_windows_amd64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staging
+      - name: Collect artifacts and checksums
+        run: |
+          mkdir -p dist
+          find staging -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/ \;
+          cd dist
+          sha256sum * > checksums.txt
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+          fi

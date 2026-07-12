@@ -16,6 +16,32 @@ full specification.
 - Printer backends: Windows spooler (RAW), CUPS raw queue, `/dev/usb/lp*`, direct USB (gousb).
 - Installs as a service (systemd / Windows SCM / launchd) via `kardianos/service`.
 
+## Download
+
+Prebuilt binaries are published on the
+[GitHub Releases](https://github.com/mirai-crm/agent/releases) page. Every
+release is a native cgo build with the USB backend enabled:
+
+| Platform | Asset |
+| --- | --- |
+| Linux x86_64 | `mirai-agent_<version>_linux_amd64.tar.gz` |
+| Linux arm64 | `mirai-agent_<version>_linux_arm64.tar.gz` |
+| macOS Intel | `mirai-agent_<version>_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `mirai-agent_<version>_darwin_arm64.tar.gz` |
+| Windows x86_64 | `mirai-agent_<version>_windows_amd64.zip` |
+
+Verify a download against `checksums.txt` (`sha256sum -c` /
+`shasum -a 256 -c`). Notes:
+
+- **Linux/macOS** need the libusb runtime for `kind = "usb"`
+  (`apt install libusb-1.0-0` / `brew install libusb`). Other backends work
+  without it.
+- **Windows** archives ship `libusb-1.0.dll` next to `mirai-agent.exe`; keep
+  them together.
+- macOS binaries are **not** signed or notarized yet; clear the quarantine
+  attribute (`xattr -d com.apple.quarantine mirai-agent`) or allow it in
+  System Settings on first run.
+
 ## Requirements
 
 - Go 1.23+.
@@ -33,6 +59,21 @@ CGO_ENABLED=1 go build -o mirai-agent ./cmd/agent
 # Without USB (no cgo/libusb needed):
 CGO_ENABLED=0 go build -o mirai-agent ./cmd/agent
 ```
+
+## Releasing
+
+Releases are built and published automatically by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) when a
+semver tag is pushed:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow runs the tests, builds all five native cgo binaries, and creates
+a GitHub Release with the archives plus `checksums.txt`. The tag (without the
+`v`) is embedded as the binary version (`mirai-agent --version`).
 
 ## Usage
 
