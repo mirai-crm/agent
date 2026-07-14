@@ -33,7 +33,7 @@ level = "info"
 # Empty -> stderr / service journal.
 path = ""
 
-# ── Devices: one block per token = one physical printer ──────────────────────
+# ── Devices: one block per token = one physical printer or POS terminal ──────
 
 [[devices]]
 token = "dev_live_a1b2c3d4e5f6..."
@@ -78,3 +78,15 @@ png_scale = 0
 #   vendor_id  = "0x0416"
 #   product_id = "0x5011"
 #   # serial = "..."
+
+[[devices]]
+token = "dev_live_pos_123456..."
+id = 46
+name = "Front POS"
+type = "pos_terminal"
+
+  [devices.pos]
+  # Direct TCP only (Wi-Fi/Ethernet). The terminal's default port is usually 2000.
+  address = "192.0.2.25:2000"
+  connect_timeout_seconds = 5
+  operation_timeout_seconds = 180

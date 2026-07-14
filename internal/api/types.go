@@ -10,10 +10,14 @@ import (
 const (
 	TaskPrintCheck   = "print_check"
 	TaskPrintZReport = "print_z_report"
+	TaskPurchase     = "purchase"
 )
 
 // DeviceType for receipt printers (only supported type in current scope).
-const DeviceTypeReceiptPrinter = "receipt_printer"
+const (
+	DeviceTypeReceiptPrinter = "receipt_printer"
+	DeviceTypePOSTerminal    = "pos_terminal"
+)
 
 // DeviceInfo is the public device data returned by GET /devices/info.
 // It intentionally never contains secretToken.
@@ -54,6 +58,12 @@ type PrintCheckData struct {
 // PrintZReportData is the payload of a print_z_report task.
 type PrintZReportData struct {
 	ZReportID int64 `json:"zReportId"`
+}
+
+// PurchaseData is the payload of a purchase task.
+type PurchaseData struct {
+	AmountMinor int64  `json:"amountMinor"`
+	MerchantID  string `json:"merchantId"`
 }
 
 // FinalizeItem is one task to finalize. Success = no ErrorMessage.

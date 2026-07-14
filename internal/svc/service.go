@@ -16,8 +16,8 @@ import (
 
 const (
 	serviceName        = "MiraiAgent"
-	serviceDisplayName = "ESC/POS Device Agent (CRM)"
-	serviceDescription = "Polls the CRM task queue and prints receipts/Z-reports on ESC/POS thermal printers."
+	serviceDisplayName = "CRM Printer and POS Agent"
+	serviceDescription = "Polls the CRM task queue for ESC/POS receipt printing and direct-TCP POS terminal purchases."
 )
 
 // program implements service.Interface.
@@ -35,7 +35,11 @@ func (p *program) Start(s service.Service) error {
 	p.done = make(chan struct{})
 	go func() {
 		defer close(p.done)
-		mgr := worker.NewManager(p.cfg, p.log)
+		mgr, err := worker.NewManager(p.cfg, p.configPath, p.log)
+		if err != nil {
+			p.log.Error("create worker manager", "error", err.Error())
+			return
+		}
 		if err := mgr.Run(ctx); err != nil {
 			p.log.Error("worker manager exited with error", "error", err.Error())
 		}

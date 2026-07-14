@@ -23,19 +23,20 @@ const (
 )
 
 // ErrNoValidTokens indicates no token passed self-discovery (exit code 4).
-var ErrNoValidTokens = errors.New("no valid tokens: /info returned 401 or type != receipt_printer for all tokens")
+var ErrNoValidTokens = errors.New("no valid tokens: /info returned 401 or unsupported device type for all tokens")
 
 // Options configures the setup flow.
 type Options struct {
-	APIURL       string            // --api-url (may be empty; falls back to config)
-	Tokens       []string          // --token (repeated) / positional
-	PrinterBinds map[string]string // deviceRef -> printerRef (from --printer)
-	NoService    bool              // --no-service
-	Yes          bool              // --yes (non-interactive)
-	ConfigPath   string            // resolved config path
-	RequestTO    time.Duration
-	In           io.Reader // stdin (for prompts)
-	Out          io.Writer // stdout (for prompts)
+	APIURL        string            // --api-url (may be empty; falls back to config)
+	Tokens        []string          // --token (repeated) / positional
+	PrinterBinds  map[string]string // deviceRef -> printerRef (from --printer)
+	TerminalBinds map[string]string // deviceRef -> host:port (from --terminal)
+	NoService     bool              // --no-service
+	Yes           bool              // --yes (non-interactive)
+	ConfigPath    string            // resolved config path
+	RequestTO     time.Duration
+	In            io.Reader // stdin (for prompts)
+	Out           io.Writer // stdout (for prompts)
 }
 
 // InstallFunc installs+starts the OS service (injected so setup does not depend
@@ -107,32 +108,43 @@ func Run(ctx context.Context, opt Options, install InstallFunc) (Result, error) 
 			skipped++
 			continue
 		}
-		if info.Type != api.DeviceTypeReceiptPrinter {
+		if info.Type != api.DeviceTypeReceiptPrinter && info.Type != api.DeviceTypePOSTerminal {
 			fmt.Fprintf(opt.Out, "token skipped: device %q has unsupported type %q (need %q)\n",
-				info.Name, info.Type, api.DeviceTypeReceiptPrinter)
-			skipped++
-			continue
-		}
-
-		pc, width, err := opt.resolvePrinter(info)
-		if err != nil {
-			fmt.Fprintf(opt.Out, "token skipped: printer binding failed for %q: %v\n", info.Name, err)
+				info.Name, info.Type, api.DeviceTypeReceiptPrinter+"|"+api.DeviceTypePOSTerminal)
 			skipped++
 			continue
 		}
 
 		dev := config.DeviceConfig{
-			Token:     token,
-			ID:        info.ID,
-			Name:      info.Name,
-			WidthDots: width,
-			Printer:   pc,
+			Token: token,
+			ID:    info.ID,
+			Name:  info.Name,
+			Type:  info.Type,
+		}
+		switch info.Type {
+		case api.DeviceTypeReceiptPrinter:
+			pc, width, err := opt.resolvePrinter(info)
+			if err != nil {
+				fmt.Fprintf(opt.Out, "token skipped: printer binding failed for %q: %v\n", info.Name, err)
+				skipped++
+				continue
+			}
+			dev.WidthDots = width
+			dev.Printer = pc
+		case api.DeviceTypePOSTerminal:
+			pos, err := opt.resolvePOS(info)
+			if err != nil {
+				fmt.Fprintf(opt.Out, "token skipped: terminal binding failed for %q: %v\n", info.Name, err)
+				skipped++
+				continue
+			}
+			dev.POS = pos
 		}
 
 		// Optional test print (interactive only).
-		if !opt.Yes {
+		if info.Type == api.DeviceTypeReceiptPrinter && !opt.Yes {
 			if yes, _ := promptYesNo(opt.In, opt.Out, fmt.Sprintf("Run a test print on %q?", info.Name)); yes {
-				if err := TestPrint(ctx, pc); err != nil {
+				if err := TestPrint(ctx, dev.Printer); err != nil {
 					fmt.Fprintf(opt.Out, "test print failed: %v\n", err)
 				} else {
 					fmt.Fprintf(opt.Out, "test print sent.\n")
@@ -147,7 +159,7 @@ func Run(ctx context.Context, opt Options, install InstallFunc) (Result, error) 
 			byToken[token] = len(cfg.Devices) - 1
 		}
 		accepted++
-		fmt.Fprintf(opt.Out, "device configured: id=%d name=%q printer=%s\n", info.ID, info.Name, pc.Kind)
+		fmt.Fprintf(opt.Out, "device configured: id=%d name=%q type=%s\n", info.ID, info.Name, info.Type)
 	}
 
 	if accepted == 0 {
@@ -217,6 +229,52 @@ func (opt Options) printerRefFor(info api.DeviceInfo) (string, bool) {
 		return ref, true
 	}
 	return "", false
+}
+
+func (opt Options) terminalRefFor(info api.DeviceInfo) (string, bool) {
+	if opt.TerminalBinds == nil {
+		return "", false
+	}
+	if ref, ok := opt.TerminalBinds[strconv.FormatInt(info.ID, 10)]; ok {
+		return ref, true
+	}
+	if ref, ok := opt.TerminalBinds[info.Name]; ok {
+		return ref, true
+	}
+	return "", false
+}
+
+func (opt Options) resolvePOS(info api.DeviceInfo) (config.POSConfig, error) {
+	if ref, ok := opt.terminalRefFor(info); ok {
+		ref = strings.TrimSpace(ref)
+		if err := config.ValidatePOSAddress(ref); err != nil {
+			return config.POSConfig{}, fmt.Errorf("invalid terminal address %q: %w", ref, err)
+		}
+		return config.POSConfig{
+			Address:                 ref,
+			ConnectTimeoutSeconds:   5,
+			OperationTimeoutSeconds: 180,
+		}, nil
+	}
+	if opt.Yes {
+		return config.POSConfig{}, errors.New("no --terminal binding provided and --yes given")
+	}
+	addr, err := promptLine(opt.In, opt.Out, "Enter terminal address (host:port): ")
+	if err != nil {
+		return config.POSConfig{}, err
+	}
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return config.POSConfig{}, errors.New("terminal address is required")
+	}
+	if err := config.ValidatePOSAddress(addr); err != nil {
+		return config.POSConfig{}, fmt.Errorf("invalid terminal address %q: %w", addr, err)
+	}
+	return config.POSConfig{
+		Address:                 addr,
+		ConnectTimeoutSeconds:   5,
+		OperationTimeoutSeconds: 180,
+	}, nil
 }
 
 // interactivePrinter shows discovered options and reads the operator's choice.

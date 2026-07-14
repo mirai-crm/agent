@@ -30,6 +30,8 @@ func cmdSetup(args []string) int {
 	fs.Var(&tokens, "token", "device secret token (repeatable)")
 	var printers stringSlice
 	fs.Var(&printers, "printer", "device binding deviceRef=printerRef (repeatable)")
+	var terminals stringSlice
+	fs.Var(&terminals, "terminal", "POS terminal binding deviceRef=host:port (repeatable)")
 	noService := fs.Bool("no-service", false, "do not install the OS service")
 	yes := fs.Bool("yes", false, "non-interactive; fail instead of prompting")
 	if err := fs.Parse(args); err != nil {
@@ -48,6 +50,11 @@ func cmdSetup(args []string) int {
 		fmt.Fprintf(os.Stderr, "setup: %v\n", err)
 		return exitUsage
 	}
+	terminalBinds, err := parseTerminalBinds(terminals)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "setup: %v\n", err)
+		return exitUsage
+	}
 
 	// A minimal logger for the install step.
 	logger, closeLog := setupLogger(config.Default(), *logLevel)
@@ -58,15 +65,16 @@ func cmdSetup(args []string) int {
 	}
 
 	opt := bootstrap.Options{
-		APIURL:       *apiURL,
-		Tokens:       tokens,
-		PrinterBinds: binds,
-		NoService:    *noService,
-		Yes:          *yes,
-		ConfigPath:   *configPath,
-		RequestTO:    20 * time.Second,
-		In:           os.Stdin,
-		Out:          os.Stdout,
+		APIURL:        *apiURL,
+		Tokens:        tokens,
+		PrinterBinds:  binds,
+		TerminalBinds: terminalBinds,
+		NoService:     *noService,
+		Yes:           *yes,
+		ConfigPath:    *configPath,
+		RequestTO:     20 * time.Second,
+		In:            os.Stdin,
+		Out:           os.Stdout,
 	}
 
 	res, err := bootstrap.Run(context.Background(), opt, install)
@@ -164,8 +172,7 @@ func cmdStatus(args []string) int {
 		fmt.Printf("base_url:     %s\n", cfg.Server.BaseURL)
 		fmt.Printf("devices:      %d\n", len(cfg.Devices))
 		for _, d := range cfg.Devices {
-			fmt.Printf("  - id=%d name=%q width=%d printer=%s token=%s\n",
-				d.ID, d.Name, d.WidthDots, printerSummary(d.Printer), logx.TokenTag(d.Token))
+			fmt.Printf("  - %s token=%s\n", deviceStatusSummary(d), logx.TokenTag(d.Token))
 		}
 	}
 	st, err := svc.Status(*configPath)
@@ -192,6 +199,24 @@ func printerSummary(p config.PrinterConfig) string {
 	}
 }
 
+func deviceBindingSummary(d config.DeviceConfig) string {
+	if d.Type == configDeviceTypePOSTerminal {
+		return "terminal=" + d.POS.Address
+	}
+	return "printer=" + printerSummary(d.Printer)
+}
+
+func deviceStatusSummary(d config.DeviceConfig) string {
+	if d.Type == configDeviceTypePOSTerminal {
+		return fmt.Sprintf("id=%d name=%q type=%s %s",
+			d.ID, d.Name, d.Type, deviceBindingSummary(d))
+	}
+	return fmt.Sprintf("id=%d name=%q type=%s width=%d %s",
+		d.ID, d.Name, d.Type, d.WidthDots, deviceBindingSummary(d))
+}
+
+const configDeviceTypePOSTerminal = "pos_terminal"
+
 func serviceErrExit(err error, op string) int {
 	var permErr *svc.PermissionError
 	if errors.As(err, &permErr) {
@@ -204,6 +229,23 @@ func serviceErrExit(err error, op string) int {
 
 // parsePrinterBinds turns []"deviceRef=printerRef" into a map.
 func parsePrinterBinds(pairs []string) (map[string]string, error) {
+	return parseBinds(pairs, "--printer", "deviceRef=printerRef")
+}
+
+func parseTerminalBinds(pairs []string) (map[string]string, error) {
+	binds, err := parseBinds(pairs, "--terminal", "deviceRef=host:port")
+	if err != nil {
+		return nil, err
+	}
+	for ref, address := range binds {
+		if err := config.ValidatePOSAddress(address); err != nil {
+			return nil, fmt.Errorf("invalid --terminal %q: %w", ref+"="+address, err)
+		}
+	}
+	return binds, nil
+}
+
+func parseBinds(pairs []string, flagName, format string) (map[string]string, error) {
 	if len(pairs) == 0 {
 		return nil, nil
 	}
@@ -211,7 +253,7 @@ func parsePrinterBinds(pairs []string) (map[string]string, error) {
 	for _, p := range pairs {
 		ref, val, ok := strings.Cut(p, "=")
 		if !ok || ref == "" || val == "" {
-			return nil, fmt.Errorf("invalid --printer %q (want deviceRef=printerRef)", p)
+			return nil, fmt.Errorf("invalid %s %q (want %s)", flagName, p, format)
 		}
 		out[ref] = val
 	}

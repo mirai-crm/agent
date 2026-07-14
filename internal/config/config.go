@@ -3,13 +3,16 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/mirai-agent/mirai-agent/internal/api"
 )
 
 // Config is the root of config.toml.
@@ -66,9 +69,11 @@ type DeviceConfig struct {
 	Token     string        `toml:"token"`
 	ID        int64         `toml:"id"`
 	Name      string        `toml:"name"`
+	Type      string        `toml:"type"`
 	WidthDots int           `toml:"width_dots"`
 	PNGScale  int           `toml:"png_scale"`
 	Printer   PrinterConfig `toml:"printer"`
+	POS       POSConfig     `toml:"pos"`
 }
 
 // PrinterConfig binds a device to a physical printer. Exactly one kind's fields apply.
@@ -80,6 +85,13 @@ type PrinterConfig struct {
 	VendorID    string `toml:"vendor_id,omitempty"`
 	ProductID   string `toml:"product_id,omitempty"`
 	Serial      string `toml:"serial,omitempty"`
+}
+
+// POSConfig binds a device to a direct TCP POS terminal.
+type POSConfig struct {
+	Address                 string `toml:"address,omitempty"`
+	ConnectTimeoutSeconds   int    `toml:"connect_timeout_seconds,omitempty"`
+	OperationTimeoutSeconds int    `toml:"operation_timeout_seconds,omitempty"`
 }
 
 // Printer kinds.
@@ -220,6 +232,20 @@ func (c *Config) applyDefaults() {
 	if c.Log.Level == "" {
 		c.Log.Level = d.Log.Level
 	}
+	for i := range c.Devices {
+		dev := &c.Devices[i]
+		if dev.Type == "" {
+			dev.Type = api.DeviceTypeReceiptPrinter
+		}
+		if dev.Type == api.DeviceTypePOSTerminal {
+			if dev.POS.ConnectTimeoutSeconds == 0 {
+				dev.POS.ConnectTimeoutSeconds = 5
+			}
+			if dev.POS.OperationTimeoutSeconds == 0 {
+				dev.POS.OperationTimeoutSeconds = 180
+			}
+		}
+	}
 	// Clamp poll knobs to server-accepted ranges.
 	if c.Poll.BatchSize < 1 {
 		c.Poll.BatchSize = 1
@@ -253,11 +279,20 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("duplicate device token for %q", dev.Name)
 		}
 		seen[dev.Token] = true
-		if dev.WidthDots <= 0 {
-			return fmt.Errorf("device %d (%s): width_dots must be positive", dev.ID, dev.Name)
-		}
-		if err := validatePrinter(dev.Printer); err != nil {
-			return fmt.Errorf("device %d (%s): %w", dev.ID, dev.Name, err)
+		switch dev.Type {
+		case api.DeviceTypeReceiptPrinter:
+			if dev.WidthDots <= 0 {
+				return fmt.Errorf("device %d (%s): width_dots must be positive", dev.ID, dev.Name)
+			}
+			if err := validatePrinter(dev.Printer); err != nil {
+				return fmt.Errorf("device %d (%s): %w", dev.ID, dev.Name, err)
+			}
+		case api.DeviceTypePOSTerminal:
+			if err := validatePOS(dev.POS); err != nil {
+				return fmt.Errorf("device %d (%s): %w", dev.ID, dev.Name, err)
+			}
+		default:
+			return fmt.Errorf("device %d (%s): unknown type %q", dev.ID, dev.Name, dev.Type)
 		}
 	}
 	return nil
@@ -285,6 +320,46 @@ func validatePrinter(p PrinterConfig) error {
 		return fmt.Errorf("printer.kind is required")
 	default:
 		return fmt.Errorf("unknown printer.kind %q", p.Kind)
+	}
+	return nil
+}
+
+func validatePOS(p POSConfig) error {
+	if err := ValidatePOSAddress(p.Address); err != nil {
+		return fmt.Errorf("pos.address: %w", err)
+	}
+	if p.ConnectTimeoutSeconds <= 0 {
+		return fmt.Errorf("pos.connect_timeout_seconds must be positive")
+	}
+	if p.OperationTimeoutSeconds <= 0 {
+		return fmt.Errorf("pos.operation_timeout_seconds must be positive")
+	}
+	return nil
+}
+
+// ValidatePOSAddress checks that address is an unambiguous TCP host:port endpoint.
+func ValidatePOSAddress(address string) error {
+	if address != strings.TrimSpace(address) || address == "" {
+		return fmt.Errorf("must be a TCP host:port endpoint")
+	}
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("must be a TCP host:port endpoint: %w", err)
+	}
+	if host == "" {
+		return fmt.Errorf("host is required")
+	}
+	if portText == "" {
+		return fmt.Errorf("port is required")
+	}
+	for _, r := range portText {
+		if r < '0' || r > '9' {
+			return fmt.Errorf("port must be numeric")
+		}
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
 	}
 	return nil
 }
