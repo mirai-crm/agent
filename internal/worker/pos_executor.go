@@ -21,26 +21,33 @@ type posClient interface {
 }
 
 type paymentJournal interface {
-	Begin(deviceID, taskID int64, input map[string]interface{}) error
+	Begin(deviceID, taskID int64, input map[string]any) error
 	MarkSent(deviceID, taskID int64) error
-	Complete(deviceID, taskID int64, data map[string]interface{}) error
+	Complete(deviceID, taskID int64, data map[string]any) error
 	Get(deviceID, taskID int64) (paymentjournal.Entry, bool)
 }
 
 type posExecutor struct {
-	deviceID int64
-	token    string
-	journal  paymentJournal
-	client   posClient
+	deviceID    int64
+	token       string
+	merchantIDs map[string]string
+	journal     paymentJournal
+	client      posClient
 }
 
-func newPOSExecutor(deviceID int64, token string, journal paymentJournal, client posClient) *posExecutor {
-	return &posExecutor{deviceID: deviceID, token: token, journal: journal, client: client}
+func newPOSExecutor(deviceID int64, token string, merchantIDs map[string]string, journal paymentJournal, client posClient) *posExecutor {
+	return &posExecutor{
+		deviceID:    deviceID,
+		token:       token,
+		merchantIDs: merchantIDs,
+		journal:     journal,
+		client:      client,
+	}
 }
 
 func (e *posExecutor) Close() error { return e.client.Close() }
 
-func (e *posExecutor) Execute(ctx context.Context, task api.Task) (map[string]interface{}, error) {
+func (e *posExecutor) Execute(ctx context.Context, task api.Task) (map[string]any, error) {
 	if task.Name != api.TaskPurchase {
 		return nil, permanent(fmt.Errorf("unsupported task name %q", task.Name))
 	}
@@ -56,8 +63,9 @@ func (e *posExecutor) Execute(ctx context.Context, task api.Task) (map[string]in
 	if input.AmountMinor <= 0 {
 		return nil, permanent(errors.New("purchase: amountMinor must be positive"))
 	}
-	if input.MerchantID == "" {
-		input.MerchantID = "0"
+	input.TIN = strings.TrimSpace(input.TIN)
+	if input.TIN == "" {
+		return nil, permanent(errors.New("purchase: tin is required"))
 	}
 
 	if entry, ok := e.journal.Get(e.deviceID, task.ID); ok {
@@ -73,17 +81,21 @@ func (e *posExecutor) Execute(ctx context.Context, task api.Task) (map[string]in
 		}
 		return data, nil
 	}
-	if err := e.journal.Begin(e.deviceID, task.ID, map[string]interface{}{
+	merchantID, ok := e.merchantIDs[input.TIN]
+	if !ok {
+		return nil, permanent(fmt.Errorf("purchase: no merchantId binding for tin %q", input.TIN))
+	}
+	if err := e.journal.Begin(e.deviceID, task.ID, map[string]any{
 		"amountMinor": input.AmountMinor,
-		"merchantId":  input.MerchantID,
+		"tin":         input.TIN,
 	}); err != nil {
 		return nil, paymentPersistenceError(err)
 	}
 
-	outcome, err := e.client.Purchase(ctx, formatAmount(input.AmountMinor), input.MerchantID, func() error {
+	outcome, err := e.client.Purchase(ctx, formatAmount(input.AmountMinor), merchantID, func() error {
 		return e.journal.MarkSent(e.deviceID, task.ID)
 	})
-	var data map[string]interface{}
+	var data map[string]any
 	if outcome.Response != nil {
 		status := "declined"
 		switch responseCode(outcome.Response) {
@@ -92,7 +104,7 @@ func (e *posExecutor) Execute(ctx context.Context, task api.Task) (map[string]in
 		case "0010":
 			status = "partial"
 		}
-		data = paymentData(input, map[string]interface{}{
+		data = paymentData(input, map[string]any{
 			"status":      status,
 			"requestSent": outcome.RequestSent,
 			"stage":       string(outcome.Stage),
@@ -140,28 +152,28 @@ func responseCode(response *privatpos.Response) string {
 	return code
 }
 
-func unknownPayment(input api.PurchaseData, requestSent bool, stage, description string) map[string]interface{} {
-	payment := map[string]interface{}{"status": "unknown", "requestSent": requestSent, "stage": stage}
+func unknownPayment(input api.PurchaseData, requestSent bool, stage, description string) map[string]any {
+	payment := map[string]any{"status": "unknown", "requestSent": requestSent, "stage": stage}
 	if description != "" {
 		payment["errorDescription"] = description
 	}
 	return paymentData(input, payment)
 }
 
-func paymentData(input api.PurchaseData, payment map[string]interface{}) map[string]interface{} {
-	return map[string]interface{}{
+func paymentData(input api.PurchaseData, payment map[string]any) map[string]any {
+	return map[string]any{
 		"amountMinor": input.AmountMinor,
-		"merchantId":  input.MerchantID,
+		"tin":         input.TIN,
 		"payment":     payment,
 	}
 }
 
-func sanitizeResponse(value map[string]interface{}) map[string]interface{} {
+func sanitizeResponse(value map[string]any) map[string]any {
 	return sanitizeMap(value)
 }
 
-func sanitizeMap(value map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(value))
+func sanitizeMap(value map[string]any) map[string]any {
+	out := make(map[string]any, len(value))
 	for key, item := range value {
 		switch strings.ToLower(key) {
 		case "track1", "cardholdername", "cardexpirydate":
@@ -172,12 +184,12 @@ func sanitizeMap(value map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-func sanitizeValue(value interface{}) interface{} {
+func sanitizeValue(value any) any {
 	switch typed := value.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		return sanitizeMap(typed)
-	case []interface{}:
-		out := make([]interface{}, len(typed))
+	case []any:
+		out := make([]any, len(typed))
 		for i, item := range typed {
 			out[i] = sanitizeValue(item)
 		}

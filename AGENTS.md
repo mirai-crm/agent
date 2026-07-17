@@ -120,6 +120,10 @@ type = "pos_terminal"
   address = "192.0.2.25:2000"    # direct TCP over Wi-Fi/Ethernet
   connect_timeout_seconds = 5
   operation_timeout_seconds = 180
+
+    [devices.pos.merchant_ids]    # task tin -> terminal merchantId
+    "1111111111" = "1"
+    "2222222222" = "3"
 ```
 
 Then apply the change:
@@ -176,10 +180,11 @@ Notes:
   scope.
 
 Purchase tasks arrive as CRM task `purchase` with input like
-`{"amountMinor":12345,"merchantId":"0"}` where `amountMinor` is in kopecks and
-an empty `merchantId` defaults to `"0"`.
+`{"amountMinor":12345,"tin":"1111111111"}` where `amountMinor` is in kopecks.
+The agent resolves the terminal `merchantId` from `devices.pos.merchant_ids`;
+an empty or unbound `tin` is rejected before contacting the terminal.
 
-Finalize payloads keep the top-level `amountMinor` and `merchantId`, then add a
+Finalize payloads keep the top-level `amountMinor` and `tin`, then add a
 `payment` object with `status`, `requestSent`, `stage`, and the full sanitized
 terminal `response`. Sensitive response fields `track1`, `cardHolderName`, and
 `cardExpiryDate` are always removed before finalization. `status` is one of

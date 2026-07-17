@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -111,7 +112,7 @@ func (m *Manager) newDeviceWorker(dev config.DeviceConfig) (*deviceWorker, error
 		if m.journal == nil {
 			return nil, errors.New("payment journal is not initialized")
 		}
-		executor = newPOSExecutor(dev.ID, dev.Token, m.journal, privatpos.NewClient(
+		executor = newPOSExecutor(dev.ID, dev.Token, dev.POS.MerchantIDs, m.journal, privatpos.NewClient(
 			dev.POS.Address,
 			time.Duration(dev.POS.ConnectTimeoutSeconds)*time.Second,
 			time.Duration(dev.POS.OperationTimeoutSeconds)*time.Second,
@@ -282,12 +283,7 @@ func (w *deviceWorker) replay(ctx context.Context) bool {
 }
 
 func containsTask(ids []int64, id int64) bool {
-	for _, candidate := range ids {
-		if candidate == id {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, id)
 }
 
 // executeWithLocalRetry retries transient errors with exponential backoff.

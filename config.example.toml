@@ -90,3 +90,8 @@ type = "pos_terminal"
   address = "192.0.2.25:2000"
   connect_timeout_seconds = 5
   operation_timeout_seconds = 180
+
+    # TIN (ЄДРПОУ/ДРФО) from the CRM purchase task -> terminal merchant index.
+    [devices.pos.merchant_ids]
+    "1111111111" = "1"
+    "2222222222" = "3"

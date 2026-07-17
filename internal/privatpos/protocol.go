@@ -3,6 +3,7 @@ package privatpos
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 )
 
 const (
@@ -26,30 +27,28 @@ type Request struct {
 // Response is one protocol response envelope. Unknown top-level fields are
 // preserved in Extra, and unknown params survive in Params.
 type Response struct {
-	Method           string                 `json:"method"`
-	Step             int                    `json:"step"`
-	Params           map[string]interface{} `json:"params,omitempty"`
-	Error            bool                   `json:"error"`
-	ErrorDescription string                 `json:"errorDescription,omitempty"`
-	Extra            map[string]interface{} `json:"-"`
-	raw              map[string]interface{}
+	Method           string         `json:"method"`
+	Step             int            `json:"step"`
+	Params           map[string]any `json:"params,omitempty"`
+	Error            bool           `json:"error"`
+	ErrorDescription string         `json:"errorDescription,omitempty"`
+	Extra            map[string]any `json:"-"`
+	raw              map[string]any
 }
 
 // Map returns the complete response envelope, including unknown top-level fields.
-func (r Response) Map() map[string]interface{} {
+func (r Response) Map() map[string]any {
 	if r.raw != nil {
 		return cloneMap(r.raw)
 	}
-	out := map[string]interface{}{
+	out := map[string]any{
 		"method":           r.Method,
 		"step":             r.Step,
 		"params":           r.Params,
 		"error":            r.Error,
 		"errorDescription": r.ErrorDescription,
 	}
-	for key, value := range r.Extra {
-		out[key] = value
-	}
+	maps.Copy(out, r.Extra)
 	return cloneMap(out)
 }
 
@@ -61,11 +60,11 @@ func (r *Response) UnmarshalJSON(data []byte) error {
 
 	type alias Response
 	var parsed struct {
-		Method           string                 `json:"method"`
-		Step             int                    `json:"step"`
-		Params           map[string]interface{} `json:"params"`
-		Error            bool                   `json:"error"`
-		ErrorDescription string                 `json:"errorDescription"`
+		Method           string         `json:"method"`
+		Step             int            `json:"step"`
+		Params           map[string]any `json:"params"`
+		Error            bool           `json:"error"`
+		ErrorDescription string         `json:"errorDescription"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return err
@@ -83,13 +82,13 @@ func (r *Response) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	extra := make(map[string]interface{})
+	extra := make(map[string]any)
 	for key, value := range raw {
 		switch key {
 		case "method", "step", "params", "error", "errorDescription":
 			continue
 		}
-		var decoded interface{}
+		var decoded any
 		if err := json.Unmarshal(value, &decoded); err != nil {
 			return err
 		}
@@ -101,20 +100,20 @@ func (r *Response) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func cloneMap(src map[string]interface{}) map[string]interface{} {
-	dst := make(map[string]interface{}, len(src))
+func cloneMap(src map[string]any) map[string]any {
+	dst := make(map[string]any, len(src))
 	for key, value := range src {
 		dst[key] = cloneValue(value)
 	}
 	return dst
 }
 
-func cloneValue(value interface{}) interface{} {
+func cloneValue(value any) any {
 	switch typed := value.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		return cloneMap(typed)
-	case []interface{}:
-		dst := make([]interface{}, len(typed))
+	case []any:
+		dst := make([]any, len(typed))
 		for i, item := range typed {
 			dst[i] = cloneValue(item)
 		}

@@ -63,7 +63,7 @@ type PrintZReportData struct {
 // PurchaseData is the payload of a purchase task.
 type PurchaseData struct {
 	AmountMinor int64  `json:"amountMinor"`
-	MerchantID  string `json:"merchantId"`
+	TIN         string `json:"tin"`
 }
 
 // FinalizeItem is one task to finalize. Success = no ErrorMessage.

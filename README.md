@@ -143,6 +143,10 @@ type = "pos_terminal"
   address = "192.0.2.25:2000"
   connect_timeout_seconds = 5
   operation_timeout_seconds = 180
+
+    [devices.pos.merchant_ids]
+    "1111111111" = "1"
+    "2222222222" = "3"
 ```
 
 `address` must be a TCP `host:port` endpoint. `connect_timeout_seconds` defaults
@@ -152,11 +156,13 @@ is limited to 1 MiB; oversized frames are rejected and the TCP session is
 discarded.
 
 Purchase tasks arrive as CRM task `purchase` with input like
-`{"amountMinor":12345,"merchantId":"0"}` where `amountMinor` is in kopecks
-(`12345` = `123.45`) and an empty `merchantId` defaults to `"0"`.
+`{"amountMinor":12345,"tin":"1111111111"}` where `amountMinor` is in kopecks
+(`12345` = `123.45`). The agent resolves the terminal `merchantId` through
+`devices.pos.merchant_ids`; an empty or unbound `tin` is rejected without
+contacting the terminal.
 
 Successful finalization data keeps the original top-level `amountMinor` and
-`merchantId`, then adds a `payment` object with:
+`tin`, then adds a `payment` object with:
 
 - `status`: `approved`, `partial`, `declined`, or `unknown`
 - `requestSent`: whether the Purchase request reached the terminal socket

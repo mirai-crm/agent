@@ -89,9 +89,10 @@ type PrinterConfig struct {
 
 // POSConfig binds a device to a direct TCP POS terminal.
 type POSConfig struct {
-	Address                 string `toml:"address,omitempty"`
-	ConnectTimeoutSeconds   int    `toml:"connect_timeout_seconds,omitempty"`
-	OperationTimeoutSeconds int    `toml:"operation_timeout_seconds,omitempty"`
+	Address                 string            `toml:"address,omitempty"`
+	ConnectTimeoutSeconds   int               `toml:"connect_timeout_seconds,omitempty"`
+	OperationTimeoutSeconds int               `toml:"operation_timeout_seconds,omitempty"`
+	MerchantIDs             map[string]string `toml:"merchant_ids,omitempty"`
 }
 
 // Printer kinds.
@@ -333,6 +334,14 @@ func validatePOS(p POSConfig) error {
 	}
 	if p.OperationTimeoutSeconds <= 0 {
 		return fmt.Errorf("pos.operation_timeout_seconds must be positive")
+	}
+	for tin, merchantID := range p.MerchantIDs {
+		if tin == "" || tin != strings.TrimSpace(tin) {
+			return fmt.Errorf("pos.merchant_ids contains an empty or whitespace-padded tin")
+		}
+		if merchantID == "" || merchantID != strings.TrimSpace(merchantID) {
+			return fmt.Errorf("pos.merchant_ids[%q] must be non-empty and not whitespace-padded", tin)
+		}
 	}
 	return nil
 }

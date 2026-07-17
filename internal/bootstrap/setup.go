@@ -138,6 +138,9 @@ func Run(ctx context.Context, opt Options, install InstallFunc) (Result, error) 
 				skipped++
 				continue
 			}
+			if idx, ok := byToken[token]; ok {
+				pos.MerchantIDs = cfg.Devices[idx].POS.MerchantIDs
+			}
 			dev.POS = pos
 		}
 
