@@ -99,3 +99,30 @@ func copyHelperBinary(srcPath, dir string) (string, error) {
 	}
 	return dstPath, nil
 }
+
+func copyFileContents(srcPath, dstPath string) error {
+	srcInfo, err := os.Stat(srcPath)
+	if err != nil {
+		return fmt.Errorf("stat copy source: %w", err)
+	}
+	if dstInfo, err := os.Stat(dstPath); err == nil && os.SameFile(srcInfo, dstInfo) {
+		return nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat copy destination: %w", err)
+	}
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open copy source: %w", err)
+	}
+	defer src.Close()
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return fmt.Errorf("create copy destination: %w", err)
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("copy file: %w", err)
+	}
+	return nil
+}

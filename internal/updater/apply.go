@@ -71,7 +71,10 @@ func applyWithDeps(ctx context.Context, req ApplyRequest, deps applyDeps) error 
 		deps.pollInterval = defaultHealthPollInterval
 	}
 
-	if err := deps.waitForParent(ctx, req.ParentPID); err != nil {
+	waitCtx, cancelWait := context.WithTimeout(ctx, time.Duration(req.ParentExitTimeoutMillis)*time.Millisecond)
+	err := deps.waitForParent(waitCtx, req.ParentPID)
+	cancelWait()
+	if err != nil {
 		return fmt.Errorf("wait for parent exit: %w", err)
 	}
 	if err := writePendingHealthMarker(req); err != nil {

@@ -3,7 +3,6 @@
 package updater
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -43,21 +42,4 @@ func prepareHelperSidecarDLL(req ApplyRequest, helperDir string) error {
 		return nil
 	}
 	return copyFileContents(srcPath, filepath.Join(helperDir, "libusb-1.0.dll"))
-}
-
-func copyFileContents(srcPath, dstPath string) error {
-	src, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("open dll source: %w", err)
-	}
-	defer src.Close()
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		return fmt.Errorf("create dll copy: %w", err)
-	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("copy dll: %w", err)
-	}
-	return nil
 }

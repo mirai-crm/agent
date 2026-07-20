@@ -35,7 +35,10 @@ func writePendingHealthMarker(req ApplyRequest) error {
 func MarkHealthy(configPath, currentVersion string) error {
 	path := markerPath(configPath)
 	marker, ok, err := tryLoadHealthMarker(path)
-	if err != nil || !ok {
+	if err != nil {
+		return fmt.Errorf("inspect health marker: %w", err)
+	}
+	if !ok {
 		return nil
 	}
 	if marker.Version != currentVersion {

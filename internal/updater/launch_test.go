@@ -44,3 +44,23 @@ func TestLaunchHelperCopiesExecutableAndWritesRequest(t *testing.T) {
 		t.Fatalf("started args = %v, want [apply-update request]", startedArgs)
 	}
 }
+
+func TestCopyFileContentsLeavesSameFileUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "libusb-1.0.dll")
+	want := []byte("staged-dll-bytes")
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if err := copyFileContents(path, path); err != nil {
+		t.Fatalf("copyFileContents() error = %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("DLL contents = %q, want %q", got, want)
+	}
+}

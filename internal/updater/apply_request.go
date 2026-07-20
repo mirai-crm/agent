@@ -10,14 +10,15 @@ import (
 )
 
 type ApplyRequest struct {
-	TargetPath          string `json:"targetPath"`
-	StagedBinaryPath    string `json:"stagedBinaryPath"`
-	StagedLibUSBPath    string `json:"stagedLibUSBPath,omitempty"`
-	ConfigPath          string `json:"configPath"`
-	ParentPID           int    `json:"parentPid"`
-	Version             string `json:"version"`
-	Nonce               string `json:"nonce"`
-	HealthTimeoutMillis int    `json:"healthTimeoutMillis"`
+	TargetPath              string `json:"targetPath"`
+	StagedBinaryPath        string `json:"stagedBinaryPath"`
+	StagedLibUSBPath        string `json:"stagedLibUSBPath,omitempty"`
+	ConfigPath              string `json:"configPath"`
+	ParentPID               int    `json:"parentPid"`
+	Version                 string `json:"version"`
+	Nonce                   string `json:"nonce"`
+	ParentExitTimeoutMillis int    `json:"parentExitTimeoutMillis"`
+	HealthTimeoutMillis     int    `json:"healthTimeoutMillis"`
 }
 
 func (r ApplyRequest) Validate() error {
@@ -34,8 +35,10 @@ func (r ApplyRequest) Validate() error {
 		return fmt.Errorf("parentPid must be positive")
 	case strings.TrimSpace(r.Version) == "":
 		return fmt.Errorf("version is required")
-	case strings.TrimSpace(r.Nonce) == "":
-		return fmt.Errorf("nonce is required")
+	case !validNonce(r.Nonce):
+		return fmt.Errorf("nonce must be 16-128 lowercase hexadecimal characters")
+	case r.ParentExitTimeoutMillis <= 0:
+		return fmt.Errorf("parentExitTimeoutMillis must be positive")
 	case r.HealthTimeoutMillis <= 0:
 		return fmt.Errorf("healthTimeoutMillis must be positive")
 	case r.TargetPath == r.StagedBinaryPath:
@@ -43,6 +46,18 @@ func (r ApplyRequest) Validate() error {
 	default:
 		return nil
 	}
+}
+
+func validNonce(nonce string) bool {
+	if len(nonce) < 16 || len(nonce) > 128 {
+		return false
+	}
+	for _, char := range nonce {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func LoadApplyRequest(path string) (ApplyRequest, error) {

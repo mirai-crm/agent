@@ -22,11 +22,16 @@ const (
 
 // program implements service.Interface.
 type program struct {
-	cfg        config.Config
-	configPath string
-	log        *slog.Logger
-	cancel     context.CancelFunc
-	done       chan struct{}
+	cfg         config.Config
+	configPath  string
+	log         *slog.Logger
+	markHealthy func() error
+	cancel      context.CancelFunc
+	done        chan struct{}
+}
+
+type managerRunner interface {
+	Run(context.Context) error
 }
 
 func (p *program) Start(s service.Service) error {
@@ -35,16 +40,27 @@ func (p *program) Start(s service.Service) error {
 	p.done = make(chan struct{})
 	go func() {
 		defer close(p.done)
-		mgr, err := worker.NewManager(p.cfg, p.configPath, p.log)
-		if err != nil {
-			p.log.Error("create worker manager", "error", err.Error())
-			return
-		}
-		if err := mgr.Run(ctx); err != nil {
-			p.log.Error("worker manager exited with error", "error", err.Error())
-		}
+		runWorker(ctx, p.log, func() (managerRunner, error) {
+			return worker.NewManager(p.cfg, p.configPath, p.log)
+		}, p.markHealthy)
 	}()
 	return nil
+}
+
+func runWorker(ctx context.Context, log *slog.Logger, build func() (managerRunner, error), markHealthy func() error) {
+	mgr, err := build()
+	if err != nil {
+		log.Error("create worker manager", "error", err.Error())
+		return
+	}
+	if markHealthy != nil {
+		if err := markHealthy(); err != nil {
+			log.Warn("mark updater health", "error", err.Error())
+		}
+	}
+	if err := mgr.Run(ctx); err != nil {
+		log.Error("worker manager exited with error", "error", err.Error())
+	}
 }
 
 func (p *program) Stop(s service.Service) error {
@@ -84,11 +100,12 @@ func newService(cfg config.Config, configPath string, log *slog.Logger) (service
 
 // Run runs the agent under the service manager (or in the foreground when not
 // launched as a service). It blocks until stopped.
-func Run(cfg config.Config, configPath string, log *slog.Logger) error {
-	s, _, err := newService(cfg, configPath, log)
+func Run(cfg config.Config, configPath string, log *slog.Logger, markHealthy func() error) error {
+	s, prg, err := newService(cfg, configPath, log)
 	if err != nil {
 		return err
 	}
+	prg.markHealthy = markHealthy
 	return s.Run()
 }
 

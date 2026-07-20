@@ -113,7 +113,9 @@ func cmdRun(args []string) int {
 	defer closeLog()
 
 	logger.Info("starting agent", "version", version.Version, "config", *configPath, "devices", len(cfg.Devices))
-	if err := svc.Run(cfg, *configPath, logger); err != nil {
+	if err := svc.Run(cfg, *configPath, logger, func() error {
+		return updater.MarkHealthy(*configPath, version.Version)
+	}); err != nil {
 		logger.Error("run exited with error", "error", err.Error())
 		return exitGeneral
 	}

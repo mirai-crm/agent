@@ -179,6 +179,34 @@ func TestApplyWaitsForParentExitBeforeTouchingFiles(t *testing.T) {
 	}
 }
 
+func TestApplyParentWaitTimeoutLeavesFilesAndMarkerUntouched(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
+	targetBefore := mustReadBytes(t, fixture.targetPath)
+	stagedBefore := mustReadBytes(t, fixture.stagedBinary)
+
+	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
+		waitForParent: func(ctx context.Context, _ int) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		service:      &stubServiceController{},
+		sleep:        testSleep,
+		pollInterval: time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "wait for parent exit") {
+		t.Fatalf("applyWithDeps() error = %v, want parent wait timeout", err)
+	}
+	if got := mustReadBytes(t, fixture.targetPath); string(got) != string(targetBefore) {
+		t.Fatalf("target changed: got %q, want %q", got, targetBefore)
+	}
+	if got := mustReadBytes(t, fixture.stagedBinary); string(got) != string(stagedBefore) {
+		t.Fatalf("staged binary changed: got %q, want %q", got, stagedBefore)
+	}
+	if _, err := os.Stat(markerPath(fixture.configPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker stat error = %v, want not exists", err)
+	}
+}
+
 func TestLoadApplyRequestRejectsMalformedRequest(t *testing.T) {
 	dir := t.TempDir()
 
@@ -196,6 +224,23 @@ func TestLoadApplyRequestRejectsMalformedRequest(t *testing.T) {
 	}
 	if _, err := LoadApplyRequest(missingFieldPath); err == nil {
 		t.Fatal("LoadApplyRequest() error = nil, want validation error")
+	}
+
+	fixture := newApplyFixture(t, applyFixtureOptions{})
+	for _, nonce := range []string{
+		"../escape",
+		"..",
+		"abcd/efgh",
+		"abcd\\efgh",
+		"0123456789abcde.",
+		"0123456789abcde\n",
+		"short",
+	} {
+		req := fixture.request
+		req.Nonce = nonce
+		if err := req.Validate(); err == nil {
+			t.Errorf("Validate() nonce %q error = nil, want error", nonce)
+		}
 	}
 }
 
@@ -229,6 +274,17 @@ func TestMarkHealthyIgnoresMismatchedVersion(t *testing.T) {
 	}
 	if marker.State != healthStateHealthy {
 		t.Fatalf("marker state = %q, want healthy", marker.State)
+	}
+}
+
+func TestMarkHealthyReturnsMalformedMarkerError(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(markerPath(configPath), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if err := MarkHealthy(configPath, "1.2.3"); err == nil {
+		t.Fatal("MarkHealthy() error = nil, want malformed marker error")
 	}
 }
 
@@ -285,14 +341,15 @@ func newApplyFixture(t *testing.T, opts applyFixtureOptions) applyFixture {
 		stagedBinary:  stagedBinary,
 		stagedDLL:     stagedDLL,
 		request: ApplyRequest{
-			TargetPath:          targetPath,
-			StagedBinaryPath:    stagedBinary,
-			StagedLibUSBPath:    stagedDLL,
-			ConfigPath:          configPath,
-			ParentPID:           4242,
-			Version:             "1.2.3",
-			Nonce:               "nonce-123",
-			HealthTimeoutMillis: timeout,
+			TargetPath:              targetPath,
+			StagedBinaryPath:        stagedBinary,
+			StagedLibUSBPath:        stagedDLL,
+			ConfigPath:              configPath,
+			ParentPID:               4242,
+			Version:                 "1.2.3",
+			Nonce:                   "0123456789abcdef0123456789abcdef",
+			ParentExitTimeoutMillis: 20,
+			HealthTimeoutMillis:     timeout,
 		},
 	}
 }
