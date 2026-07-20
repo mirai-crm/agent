@@ -13,12 +13,16 @@ type ApplyRequest struct {
 	TargetPath              string `json:"targetPath"`
 	StagedBinaryPath        string `json:"stagedBinaryPath"`
 	StagedLibUSBPath        string `json:"stagedLibUSBPath,omitempty"`
+	StageDir                string `json:"stageDir,omitempty"`
+	HelperPath              string `json:"helperPath,omitempty"`
+	HelperSidecarPath       string `json:"helperSidecarPath,omitempty"`
 	ConfigPath              string `json:"configPath"`
 	ParentPID               int    `json:"parentPid"`
 	Version                 string `json:"version"`
 	Nonce                   string `json:"nonce"`
 	ParentExitTimeoutMillis int    `json:"parentExitTimeoutMillis"`
 	HealthTimeoutMillis     int    `json:"healthTimeoutMillis"`
+	RequestPath             string `json:"-"`
 }
 
 func (r ApplyRequest) Validate() error {
@@ -29,6 +33,12 @@ func (r ApplyRequest) Validate() error {
 		return fmt.Errorf("stagedBinaryPath must be absolute")
 	case r.StagedLibUSBPath != "" && !filepath.IsAbs(r.StagedLibUSBPath):
 		return fmt.Errorf("stagedLibUSBPath must be absolute")
+	case r.StageDir != "" && !filepath.IsAbs(r.StageDir):
+		return fmt.Errorf("stageDir must be absolute")
+	case r.HelperPath != "" && !filepath.IsAbs(r.HelperPath):
+		return fmt.Errorf("helperPath must be absolute")
+	case r.HelperSidecarPath != "" && !filepath.IsAbs(r.HelperSidecarPath):
+		return fmt.Errorf("helperSidecarPath must be absolute")
 	case !filepath.IsAbs(r.ConfigPath):
 		return fmt.Errorf("configPath must be absolute")
 	case r.ParentPID <= 0:
@@ -72,6 +82,7 @@ func LoadApplyRequest(path string) (ApplyRequest, error) {
 	if err := req.Validate(); err != nil {
 		return ApplyRequest{}, fmt.Errorf("validate apply request: %w", err)
 	}
+	req.RequestPath = path
 	return req, nil
 }
 
@@ -89,12 +100,25 @@ func WriteApplyRequest(dir string, req ApplyRequest) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create apply request: %w", err)
 	}
-	defer tmp.Close()
+	ok := false
+	defer func() {
+		_ = tmp.Close()
+		if !ok {
+			_ = os.Remove(tmp.Name())
+		}
+	}()
 	if err := tmp.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
 		return "", fmt.Errorf("chmod apply request: %w", err)
 	}
 	if err := json.NewEncoder(tmp).Encode(req); err != nil {
 		return "", fmt.Errorf("write apply request: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		return "", fmt.Errorf("sync apply request: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close apply request: %w", err)
+	}
+	ok = true
 	return tmp.Name(), nil
 }

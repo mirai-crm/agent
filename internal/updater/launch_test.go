@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,6 +43,59 @@ func TestLaunchHelperCopiesExecutableAndWritesRequest(t *testing.T) {
 	}
 	if len(startedArgs) != 2 || startedArgs[0] != "apply-update" || startedArgs[1] != result.RequestPath {
 		t.Fatalf("started args = %v, want [apply-update request]", startedArgs)
+	}
+}
+
+func TestLaunchHelperCleansGeneratedArtifactsWhenStartFails(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: false})
+	selfPath := filepath.Join(t.TempDir(), "mirai-agent-self")
+	if err := os.WriteFile(selfPath, []byte("self-binary"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := launchHelperWith(fixture.request, launchDeps{
+		selfPath: selfPath,
+		startDetached: func(launchedCommand) error {
+			return errors.New("start failed")
+		},
+	})
+	if err == nil {
+		t.Fatal("launchHelperWith() error = nil, want start failure")
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(fixture.stagedBinary))
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("stage entries = %v, want only staged binary and DLL", entries)
+	}
+}
+
+func TestLaunchHelperCleansGeneratedArtifactsWhenPrepareFails(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: false})
+	selfPath := filepath.Join(t.TempDir(), "mirai-agent-self")
+	if err := os.WriteFile(selfPath, []byte("self-binary"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := launchHelperWith(fixture.request, launchDeps{
+		selfPath: selfPath,
+		prepareSidecar: func(ApplyRequest, string) error {
+			return errors.New("prepare failed")
+		},
+		startDetached: func(launchedCommand) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("launchHelperWith() error = nil, want prepare failure")
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(fixture.stagedBinary))
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("stage entries = %v, want only staged binary and DLL", entries)
 	}
 }
 

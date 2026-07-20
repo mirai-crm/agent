@@ -21,8 +21,9 @@ type launchedCommand struct {
 }
 
 type launchDeps struct {
-	selfPath      string
-	startDetached func(launchedCommand) error
+	selfPath       string
+	prepareSidecar func(ApplyRequest, string) error
+	startDetached  func(launchedCommand) error
 }
 
 func LaunchHelper(req ApplyRequest) (LaunchResult, error) {
@@ -46,23 +47,41 @@ func launchHelperWith(req ApplyRequest, deps launchDeps) (LaunchResult, error) {
 	if deps.startDetached == nil {
 		return LaunchResult{}, fmt.Errorf("detached launcher is required")
 	}
+	if deps.prepareSidecar == nil {
+		deps.prepareSidecar = prepareHelperSidecarDLL
+	}
 
 	helperDir := filepath.Dir(req.StagedBinaryPath)
-	requestPath, err := WriteApplyRequest(helperDir, req)
-	if err != nil {
-		return LaunchResult{}, err
-	}
+	req.StageDir = helperDir
 	helperPath, err := copyHelperBinary(deps.selfPath, helperDir)
 	if err != nil {
 		return LaunchResult{}, err
 	}
-	if err := prepareHelperSidecarDLL(req, helperDir); err != nil {
+	req.HelperPath = helperPath
+	var requestPath string
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = removeFiles(requestPath, req.HelperSidecarPath, helperPath)
+		}
+	}()
+	sidecarPath := filepath.Join(helperDir, "libusb-1.0.dll")
+	_, sidecarExisted := os.Stat(sidecarPath)
+	if err := deps.prepareSidecar(req, helperDir); err != nil {
+		return LaunchResult{}, err
+	}
+	if _, err := os.Stat(sidecarPath); err == nil && os.IsNotExist(sidecarExisted) {
+		req.HelperSidecarPath = sidecarPath
+	}
+	requestPath, err = WriteApplyRequest(helperDir, req)
+	if err != nil {
 		return LaunchResult{}, err
 	}
 	cmd := buildHelperCommand(helperPath, requestPath)
 	if err := deps.startDetached(cmd); err != nil {
 		return LaunchResult{}, fmt.Errorf("launch helper: %w", err)
 	}
+	cleanup = false
 	return LaunchResult{HelperPath: helperPath, RequestPath: requestPath}, nil
 }
 
@@ -87,7 +106,13 @@ func copyHelperBinary(srcPath, dir string) (string, error) {
 		return "", fmt.Errorf("create helper copy: %w", err)
 	}
 	dstPath := dst.Name()
-	defer dst.Close()
+	ok := false
+	defer func() {
+		_ = dst.Close()
+		if !ok {
+			_ = os.Remove(dstPath)
+		}
+	}()
 	if _, err := io.Copy(dst, src); err != nil {
 		return "", fmt.Errorf("copy helper binary: %w", err)
 	}
@@ -97,6 +122,7 @@ func copyHelperBinary(srcPath, dir string) (string, error) {
 	if err := os.Chmod(dstPath, info.Mode().Perm()); err != nil && runtime.GOOS != "windows" {
 		return "", fmt.Errorf("chmod helper binary: %w", err)
 	}
+	ok = true
 	return dstPath, nil
 }
 

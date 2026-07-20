@@ -31,7 +31,7 @@ type program struct {
 }
 
 type managerRunner interface {
-	Run(context.Context) error
+	RunReady(context.Context, func()) error
 }
 
 func (p *program) Start(s service.Service) error {
@@ -53,12 +53,14 @@ func runWorker(ctx context.Context, log *slog.Logger, build func() (managerRunne
 		log.Error("create worker manager", "error", err.Error())
 		return
 	}
-	if markHealthy != nil {
-		if err := markHealthy(); err != nil {
-			log.Warn("mark updater health", "error", err.Error())
+	ready := func() {
+		if markHealthy != nil {
+			if err := markHealthy(); err != nil {
+				log.Warn("mark updater health", "error", err.Error())
+			}
 		}
 	}
-	if err := mgr.Run(ctx); err != nil {
+	if err := mgr.RunReady(ctx, ready); err != nil {
 		log.Error("worker manager exited with error", "error", err.Error())
 	}
 }

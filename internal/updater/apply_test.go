@@ -94,12 +94,8 @@ func TestApplyRollsBackWhenServiceStartFails(t *testing.T) {
 	if service.stopCalls != 1 {
 		t.Fatalf("stop calls = %d, want 1", service.stopCalls)
 	}
-	marker, err := loadHealthMarker(markerPath(fixture.configPath))
-	if err != nil {
-		t.Fatalf("loadHealthMarker() error = %v", err)
-	}
-	if marker.State != healthStatePending {
-		t.Fatalf("marker state = %q, want pending", marker.State)
+	if _, err := os.Stat(markerPath(fixture.configPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker stat error = %v, want handled rollback cleanup", err)
 	}
 }
 
@@ -111,6 +107,7 @@ func TestApplyRollsBackAfterHealthTimeoutAndRemovesIntroducedDLL(t *testing.T) {
 				Nonce:   "wrong",
 				Version: fixture.request.Version,
 				State:   healthStateHealthy,
+				Phase:   phaseHealthy,
 			})
 		},
 	}
@@ -182,7 +179,6 @@ func TestApplyWaitsForParentExitBeforeTouchingFiles(t *testing.T) {
 func TestApplyParentWaitTimeoutLeavesFilesAndMarkerUntouched(t *testing.T) {
 	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
 	targetBefore := mustReadBytes(t, fixture.targetPath)
-	stagedBefore := mustReadBytes(t, fixture.stagedBinary)
 
 	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
 		waitForParent: func(ctx context.Context, _ int) error {
@@ -199,11 +195,168 @@ func TestApplyParentWaitTimeoutLeavesFilesAndMarkerUntouched(t *testing.T) {
 	if got := mustReadBytes(t, fixture.targetPath); string(got) != string(targetBefore) {
 		t.Fatalf("target changed: got %q, want %q", got, targetBefore)
 	}
-	if got := mustReadBytes(t, fixture.stagedBinary); string(got) != string(stagedBefore) {
-		t.Fatalf("staged binary changed: got %q, want %q", got, stagedBefore)
+	if _, err := os.Stat(fixture.stagedBinary); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged binary stat error = %v, want cleanup", err)
 	}
 	if _, err := os.Stat(markerPath(fixture.configPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("marker stat error = %v, want not exists", err)
+	}
+}
+
+func TestApplyResumesAfterInterruptedReplacementPhases(t *testing.T) {
+	for _, faultPhase := range []updatePhase{
+		phaseBackupsReady,
+		phaseBinaryReplaced,
+		phaseDLLReplaced,
+	} {
+		t.Run(string(faultPhase), func(t *testing.T) {
+			fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
+			service := &stubServiceController{
+				startHook: func(configPath string) error {
+					return MarkHealthy(configPath, fixture.request.Version)
+				},
+			}
+			crash := errors.New("simulated crash")
+
+			err := applyWithDeps(context.Background(), fixture.request, applyDeps{
+				waitForParent: func(context.Context, int) error { return nil },
+				service:       service,
+				sleep:         testSleep,
+				pollInterval:  time.Millisecond,
+				afterPhase: func(phase updatePhase) error {
+					if phase == faultPhase {
+						return crash
+					}
+					return nil
+				},
+			})
+			if !errors.Is(err, crash) {
+				t.Fatalf("first apply error = %v, want simulated crash", err)
+			}
+			if _, err := os.Stat(fixture.targetPath); err != nil {
+				t.Fatalf("target missing after %s: %v", faultPhase, err)
+			}
+
+			err = applyWithDeps(context.Background(), fixture.request, applyDeps{
+				waitForParent: func(context.Context, int) error { return nil },
+				service:       service,
+				sleep:         testSleep,
+				pollInterval:  time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("resume apply error = %v", err)
+			}
+			if got := mustReadString(t, fixture.targetPath); got != "new-binary" {
+				t.Fatalf("target contents = %q, want new binary", got)
+			}
+			if got := mustReadString(t, fixture.targetDLLPath); got != "new-dll" {
+				t.Fatalf("DLL contents = %q, want new DLL", got)
+			}
+		})
+	}
+}
+
+func TestInterruptedUpdateVersionMismatchRetainsBackups(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
+	crash := errors.New("simulated crash")
+	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
+		waitForParent: func(context.Context, int) error { return nil },
+		service:       &stubServiceController{},
+		sleep:         testSleep,
+		pollInterval:  time.Millisecond,
+		afterPhase: func(phase updatePhase) error {
+			if phase == phaseBinaryReplaced {
+				return crash
+			}
+			return nil
+		},
+	})
+	if !errors.Is(err, crash) {
+		t.Fatalf("apply error = %v, want simulated crash", err)
+	}
+
+	if err := MarkHealthy(fixture.configPath, "1.2.2"); err != nil {
+		t.Fatalf("MarkHealthy() error = %v", err)
+	}
+	for _, path := range []string{
+		backupPathFor(fixture.targetPath, fixture.request.Nonce),
+		backupPathFor(fixture.targetDLLPath, fixture.request.Nonce),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("backup %q missing after mismatch: %v", path, err)
+		}
+	}
+	marker, err := loadHealthMarker(markerPath(fixture.configPath))
+	if err != nil {
+		t.Fatalf("loadHealthMarker() error = %v", err)
+	}
+	if marker.State != healthStatePending {
+		t.Fatalf("marker state = %q, want pending", marker.State)
+	}
+}
+
+func TestApplyParentTimeoutCleansGeneratedArtifacts(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
+	fixture.request.RequestPath = filepath.Join(filepath.Dir(fixture.stagedBinary), "request.json")
+	fixture.request.HelperPath = filepath.Join(filepath.Dir(fixture.stagedBinary), "helper")
+	writeFileWithMode(t, fixture.request.RequestPath, []byte("{}"), 0o600)
+	writeFileWithMode(t, fixture.request.HelperPath, []byte("helper"), 0o700)
+
+	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
+		waitForParent: func(ctx context.Context, _ int) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		service:      &stubServiceController{},
+		sleep:        testSleep,
+		pollInterval: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("applyWithDeps() error = nil, want timeout")
+	}
+	if got := mustReadString(t, fixture.targetPath); got != "old-binary" {
+		t.Fatalf("target contents = %q, want old binary", got)
+	}
+	for _, path := range []string{
+		fixture.request.RequestPath,
+		fixture.request.HelperPath,
+		fixture.stagedBinary,
+		fixture.stagedDLL,
+	} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("artifact %q stat error = %v, want not exists", path, err)
+		}
+	}
+}
+
+func TestApplySuccessCleansGeneratedArtifactsAndStageDirectory(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
+	stageDir := filepath.Dir(fixture.stagedBinary)
+	fixture.request.StageDir = stageDir
+	fixture.request.RequestPath = filepath.Join(stageDir, "request.json")
+	fixture.request.HelperPath = filepath.Join(stageDir, "helper")
+	writeFileWithMode(t, fixture.request.RequestPath, []byte("{}"), 0o600)
+	writeFileWithMode(t, fixture.request.HelperPath, []byte("helper"), 0o700)
+	service := &stubServiceController{
+		startHook: func(configPath string) error {
+			return MarkHealthy(configPath, fixture.request.Version)
+		},
+	}
+
+	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
+		waitForParent: func(context.Context, int) error { return nil },
+		service:       service,
+		sleep:         testSleep,
+		pollInterval:  time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("applyWithDeps() error = %v", err)
+	}
+	if _, err := os.Stat(stageDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stage directory stat error = %v, want not exists", err)
+	}
+	if got := mustReadString(t, fixture.targetPath); got != "new-binary" {
+		t.Fatalf("target contents = %q, want new binary", got)
 	}
 }
 
@@ -250,6 +403,7 @@ func TestMarkHealthyIgnoresMismatchedVersion(t *testing.T) {
 		Nonce:   "nonce-1",
 		Version: "1.2.3",
 		State:   healthStatePending,
+		Phase:   phaseDLLReplaced,
 	}); err != nil {
 		t.Fatalf("writeHealthMarker() error = %v", err)
 	}
@@ -368,6 +522,7 @@ func (s *stubServiceController) Start(configPath string) error {
 	s.startCalls++
 	hook := s.startHook
 	err := s.startErr
+	s.startErr = nil
 	s.mu.Unlock()
 	if hook != nil {
 		if hookErr := hook(configPath); hookErr != nil {

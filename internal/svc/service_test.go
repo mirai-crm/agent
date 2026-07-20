@@ -13,7 +13,9 @@ import (
 
 func TestRunWorkerMarksHealthyAfterManagerConstructionBeforeRun(t *testing.T) {
 	var events []string
-	runner := managerRunnerFunc(func(context.Context) error {
+	runner := managerRunnerFunc(func(_ context.Context, ready func()) error {
+		events = append(events, "launch")
+		ready()
 		events = append(events, "run")
 		return nil
 	})
@@ -26,7 +28,7 @@ func TestRunWorkerMarksHealthyAfterManagerConstructionBeforeRun(t *testing.T) {
 		return nil
 	})
 
-	if want := []string{"construct", "healthy", "run"}; !reflect.DeepEqual(events, want) {
+	if want := []string{"construct", "launch", "healthy", "run"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
 }
@@ -51,7 +53,8 @@ func TestRunWorkerContinuesWhenHealthMarkFails(t *testing.T) {
 	var logs bytes.Buffer
 
 	runWorker(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), func() (managerRunner, error) {
-		return managerRunnerFunc(func(context.Context) error {
+		return managerRunnerFunc(func(_ context.Context, ready func()) error {
+			ready()
 			ran = true
 			return nil
 		}), nil
@@ -67,10 +70,10 @@ func TestRunWorkerContinuesWhenHealthMarkFails(t *testing.T) {
 	}
 }
 
-type managerRunnerFunc func(context.Context) error
+type managerRunnerFunc func(context.Context, func()) error
 
-func (f managerRunnerFunc) Run(ctx context.Context) error {
-	return f(ctx)
+func (f managerRunnerFunc) RunReady(ctx context.Context, ready func()) error {
+	return f(ctx, ready)
 }
 
 func testLogger() *slog.Logger {

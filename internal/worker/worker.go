@@ -29,6 +29,7 @@ type Manager struct {
 	log     *slog.Logger
 	journal *paymentjournal.Journal
 	gate    *drainGate
+	workers []*deviceWorker
 }
 
 // NewManager builds a Manager.
@@ -63,10 +64,34 @@ func (m *Manager) IsDraining() bool {
 // Run starts all device workers and blocks until ctx is cancelled and all
 // workers have drained.
 func (m *Manager) Run(ctx context.Context) error {
-	if len(m.cfg.Devices) == 0 {
-		return errors.New("no devices configured")
+	return m.RunReady(ctx, nil)
+}
+
+// RunReady constructs all usable workers, launches them, then calls ready.
+// It returns an error without signaling readiness when no worker can be built.
+func (m *Manager) RunReady(ctx context.Context, ready func()) error {
+	if err := m.prepareWorkers(); err != nil {
+		return err
 	}
 	var wg sync.WaitGroup
+	for _, w := range m.workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.run(ctx)
+		}()
+	}
+	if ready != nil {
+		ready()
+	}
+	wg.Wait()
+	return nil
+}
+
+func (m *Manager) prepareWorkers() error {
+	if len(m.workers) > 0 {
+		return nil
+	}
 	for i := range m.cfg.Devices {
 		dev := m.cfg.Devices[i]
 		w, err := m.newDeviceWorker(dev)
@@ -75,13 +100,11 @@ func (m *Manager) Run(ctx context.Context) error {
 				"device_id", dev.ID, "device_name", dev.Name, "error", err.Error())
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			w.run(ctx)
-		}()
+		m.workers = append(m.workers, w)
 	}
-	wg.Wait()
+	if len(m.workers) == 0 {
+		return errors.New("no usable device workers")
+	}
 	return nil
 }
 
