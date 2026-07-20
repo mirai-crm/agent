@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestCheckerCheckFindsNewerStableRelease(t *testing.T) {
+func TestCheckerCheckSelectsReleaseAssetForSupportedTargets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/mirai-crm/agent/releases/latest" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
@@ -20,27 +20,49 @@ func TestCheckerCheckFindsNewerStableRelease(t *testing.T) {
 			"prerelease":false,
 			"assets":[
 				{"name":"mirai-agent_1.2.3_linux_amd64.tar.gz","browser_download_url":"https://example.com/mirai-agent_1.2.3_linux_amd64.tar.gz"},
+				{"name":"mirai-agent_1.2.3_linux_arm64.tar.gz","browser_download_url":"https://example.com/mirai-agent_1.2.3_linux_arm64.tar.gz"},
+				{"name":"mirai-agent_1.2.3_darwin_amd64.tar.gz","browser_download_url":"https://example.com/mirai-agent_1.2.3_darwin_amd64.tar.gz"},
+				{"name":"mirai-agent_1.2.3_darwin_arm64.tar.gz","browser_download_url":"https://example.com/mirai-agent_1.2.3_darwin_arm64.tar.gz"},
+				{"name":"mirai-agent_1.2.3_windows_amd64.zip","browser_download_url":"https://example.com/mirai-agent_1.2.3_windows_amd64.zip"},
 				{"name":"checksums.txt","browser_download_url":"https://example.com/checksums.txt"}
 			]
 		}`)
 	}))
 	defer server.Close()
 
-	release, err := Checker{APIBaseURL: server.URL}.Check(context.Background(), server.Client(), "1.2.2", "linux", "amd64")
-	if err != nil {
-		t.Fatalf("Check() error = %v", err)
+	tests := []struct {
+		goos      string
+		goarch    string
+		assetName string
+	}{
+		{goos: "linux", goarch: "amd64", assetName: "mirai-agent_1.2.3_linux_amd64.tar.gz"},
+		{goos: "linux", goarch: "arm64", assetName: "mirai-agent_1.2.3_linux_arm64.tar.gz"},
+		{goos: "darwin", goarch: "amd64", assetName: "mirai-agent_1.2.3_darwin_amd64.tar.gz"},
+		{goos: "darwin", goarch: "arm64", assetName: "mirai-agent_1.2.3_darwin_arm64.tar.gz"},
+		{goos: "windows", goarch: "amd64", assetName: "mirai-agent_1.2.3_windows_amd64.zip"},
 	}
-	if release == nil {
-		t.Fatal("Check() release = nil, want update")
-	}
-	if release.Version != "1.2.3" {
-		t.Fatalf("Version = %q, want 1.2.3", release.Version)
-	}
-	if release.AssetName != "mirai-agent_1.2.3_linux_amd64.tar.gz" {
-		t.Fatalf("AssetName = %q", release.AssetName)
-	}
-	if release.ChecksumsURL != "https://example.com/checksums.txt" {
-		t.Fatalf("ChecksumsURL = %q", release.ChecksumsURL)
+	for _, tt := range tests {
+		t.Run(tt.goos+"_"+tt.goarch, func(t *testing.T) {
+			release, err := Checker{APIBaseURL: server.URL}.Check(context.Background(), server.Client(), "1.2.2", tt.goos, tt.goarch)
+			if err != nil {
+				t.Fatalf("Check() error = %v", err)
+			}
+			if release == nil {
+				t.Fatal("Check() release = nil, want update")
+			}
+			if release.Version != "1.2.3" {
+				t.Fatalf("Version = %q, want 1.2.3", release.Version)
+			}
+			if release.AssetName != tt.assetName {
+				t.Fatalf("AssetName = %q, want %q", release.AssetName, tt.assetName)
+			}
+			if release.AssetURL != "https://example.com/"+tt.assetName {
+				t.Fatalf("AssetURL = %q", release.AssetURL)
+			}
+			if release.ChecksumsURL != "https://example.com/checksums.txt" {
+				t.Fatalf("ChecksumsURL = %q", release.ChecksumsURL)
+			}
+		})
 	}
 }
 

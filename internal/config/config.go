@@ -252,9 +252,6 @@ func (c *Config) applyDefaults() {
 	if c.Log.Level == "" {
 		c.Log.Level = d.Log.Level
 	}
-	if c.Update.CheckIntervalHours == 0 {
-		c.Update.CheckIntervalHours = d.Update.CheckIntervalHours
-	}
 	for i := range c.Devices {
 		dev := &c.Devices[i]
 		if dev.Type == "" {

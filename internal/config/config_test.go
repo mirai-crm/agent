@@ -147,13 +147,32 @@ width_dots = 576
 	}
 }
 
-func TestValidateRejectsEnabledUpdateIntervalBelowOneHour(t *testing.T) {
-	cfg := validConfigForTest()
-	cfg.Update.Enabled = true
-	cfg.Update.CheckIntervalHours = 0
+func TestLoadRejectsExplicitZeroUpdateIntervalWhenEnabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const source = `
+[server]
+base_url = "https://crm.example.com"
 
-	err := cfg.Validate()
+[update]
+enabled = true
+check_interval_hours = 0
+
+[[devices]]
+token = "receipt-token"
+id = 7
+name = "Front desk"
+width_dots = 576
+
+  [devices.printer]
+  kind = "cups_raw"
+  queue = "thermal_raw"
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), "update.check_interval_hours") {
-		t.Fatalf("Validate() error = %v", err)
+		t.Fatalf("Load() error = %v", err)
 	}
 }
