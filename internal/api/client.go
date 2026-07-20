@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mirai-agent/mirai-agent/internal/version"
 )
 
 // Errors that callers classify to drive retry/skip behaviour.
@@ -187,6 +189,7 @@ func (c *Client) Ping(ctx context.Context) (PingResponse, error) {
 	if err != nil {
 		return PingResponse{}, err
 	}
+	req.Header.Set("X-Agent-Version", version.Version)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return PingResponse{}, err
