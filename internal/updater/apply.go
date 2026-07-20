@@ -55,12 +55,26 @@ func applyWithDeps(ctx context.Context, req ApplyRequest, deps applyDeps) error 
 		deps.pollInterval = defaultHealthPollInterval
 	}
 
+	if err := deps.service.Stop(req.ConfigPath); err != nil {
+		cause := fmt.Errorf("stop service before update: %w", err)
+		if cleanupErr := cleanupGeneratedArtifacts(req); cleanupErr != nil {
+			return errors.Join(cause, cleanupErr)
+		}
+		return cause
+	}
+
 	waitCtx, cancelWait := context.WithTimeout(ctx, time.Duration(req.ParentExitTimeoutMillis)*time.Millisecond)
 	err := deps.waitForParent(waitCtx, req.ParentPID)
 	cancelWait()
 	if err != nil {
-		_ = cleanupGeneratedArtifacts(req)
-		return fmt.Errorf("wait for parent exit: %w", err)
+		errs := []error{fmt.Errorf("wait for parent exit: %w", err)}
+		if startErr := deps.service.Start(req.ConfigPath); startErr != nil {
+			errs = append(errs, fmt.Errorf("restart previous service: %w", startErr))
+		}
+		if cleanupErr := cleanupGeneratedArtifacts(req); cleanupErr != nil {
+			errs = append(errs, cleanupErr)
+		}
+		return errors.Join(errs...)
 	}
 
 	marker, err := loadOrCreateApplyMarker(req, deps)

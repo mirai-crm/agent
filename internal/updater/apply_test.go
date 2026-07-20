@@ -1,12 +1,14 @@
 package updater
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -48,8 +50,8 @@ func TestApplySwapsBinaryAndWaitsForHealthyMarker(t *testing.T) {
 	if service.startCalls != 1 {
 		t.Fatalf("start calls = %d, want 1", service.startCalls)
 	}
-	if service.stopCalls != 0 {
-		t.Fatalf("stop calls = %d, want 0", service.stopCalls)
+	if service.stopCalls != 1 {
+		t.Fatalf("stop calls = %d, want 1", service.stopCalls)
 	}
 	if _, err := os.Stat(markerPath(fixture.configPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("marker stat error = %v, want not exists", err)
@@ -91,8 +93,8 @@ func TestApplyRollsBackWhenServiceStartFails(t *testing.T) {
 	if service.startCalls != 2 {
 		t.Fatalf("start calls = %d, want 2 (new + rollback)", service.startCalls)
 	}
-	if service.stopCalls != 1 {
-		t.Fatalf("stop calls = %d, want 1", service.stopCalls)
+	if service.stopCalls != 2 {
+		t.Fatalf("stop calls = %d, want 2 (initial + rollback)", service.stopCalls)
 	}
 	if _, err := os.Stat(markerPath(fixture.configPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("marker stat error = %v, want handled rollback cleanup", err)
@@ -131,14 +133,110 @@ func TestApplyRollsBackAfterHealthTimeoutAndRemovesIntroducedDLL(t *testing.T) {
 	if service.startCalls != 2 {
 		t.Fatalf("start calls = %d, want 2 (new + rollback)", service.startCalls)
 	}
-	if service.stopCalls != 1 {
-		t.Fatalf("stop calls = %d, want 1", service.stopCalls)
+	if service.stopCalls != 2 {
+		t.Fatalf("stop calls = %d, want 2 (initial + rollback)", service.stopCalls)
+	}
+}
+
+func TestApplyStopsServiceBeforeParentWaitAndReplacement(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
+	var events []string
+	service := &stubServiceController{
+		stopHook: func(string) error {
+			events = append(events, "stop")
+			return nil
+		},
+		startHook: func(configPath string) error {
+			events = append(events, "start")
+			return MarkHealthy(configPath, fixture.request.Version)
+		},
+	}
+
+	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
+		waitForParent: func(context.Context, int) error {
+			events = append(events, "wait")
+			return nil
+		},
+		service:      service,
+		sleep:        testSleep,
+		pollInterval: time.Millisecond,
+		afterPhase: func(phase updatePhase) error {
+			switch phase {
+			case phaseBackupsReady:
+				events = append(events, "backup")
+			case phaseBinaryReplaced:
+				events = append(events, "replace")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("applyWithDeps() error = %v", err)
+	}
+	want := []string{"stop", "wait", "backup", "replace", "start"}
+	if !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	if service.startCalls != 1 {
+		t.Fatalf("start calls = %d, want exactly 1", service.startCalls)
+	}
+}
+
+func TestApplyStopFailureLeavesInstalledStateUntouched(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
+	fixture.request.StageDir = filepath.Dir(fixture.stagedBinary)
+	fixture.request.RequestPath = filepath.Join(fixture.request.StageDir, "request.json")
+	fixture.request.HelperPath = filepath.Join(fixture.request.StageDir, "helper")
+	writeFileWithMode(t, fixture.request.RequestPath, []byte("{}"), 0o600)
+	writeFileWithMode(t, fixture.request.HelperPath, []byte("helper"), 0o700)
+
+	targetBefore := mustReadBytes(t, fixture.targetPath)
+	dllBefore := mustReadBytes(t, fixture.targetDLLPath)
+	configBefore := mustReadBytes(t, fixture.configPath)
+	paymentsBefore := mustReadBytes(t, fixture.paymentsPath)
+	waitCalled := false
+	service := &stubServiceController{stopErr: errors.New("stop failed")}
+
+	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
+		waitForParent: func(context.Context, int) error {
+			waitCalled = true
+			return nil
+		},
+		service:      service,
+		sleep:        testSleep,
+		pollInterval: time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "stop service before update") {
+		t.Fatalf("applyWithDeps() error = %v, want stop failure", err)
+	}
+	if waitCalled {
+		t.Fatal("parent wait called after service stop failure")
+	}
+	if service.startCalls != 0 {
+		t.Fatalf("start calls = %d, want 0", service.startCalls)
+	}
+	for path, want := range map[string][]byte{
+		fixture.targetPath:    targetBefore,
+		fixture.targetDLLPath: dllBefore,
+		fixture.configPath:    configBefore,
+		fixture.paymentsPath:  paymentsBefore,
+	} {
+		if got := mustReadBytes(t, path); !bytes.Equal(got, want) {
+			t.Fatalf("%s changed: got %q, want %q", path, got, want)
+		}
+	}
+	if _, err := os.Stat(markerPath(fixture.configPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker stat error = %v, want not exists", err)
+	}
+	if _, err := os.Stat(fixture.request.StageDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stage directory stat error = %v, want cleaned", err)
 	}
 }
 
 func TestApplyWaitsForParentExitBeforeTouchingFiles(t *testing.T) {
 	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: false})
 	releaseParent := make(chan struct{})
+	parentWaitStarted := make(chan struct{})
 	service := &stubServiceController{
 		startHook: func(configPath string) error {
 			return MarkHealthy(configPath, fixture.request.Version)
@@ -149,6 +247,7 @@ func TestApplyWaitsForParentExitBeforeTouchingFiles(t *testing.T) {
 	go func() {
 		errCh <- applyWithDeps(context.Background(), fixture.request, applyDeps{
 			waitForParent: func(context.Context, int) error {
+				close(parentWaitStarted)
 				<-releaseParent
 				return nil
 			},
@@ -158,7 +257,7 @@ func TestApplyWaitsForParentExitBeforeTouchingFiles(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(10 * time.Millisecond)
+	<-parentWaitStarted
 	if got := mustReadString(t, fixture.targetPath); got != "old-binary" {
 		t.Fatalf("target contents before parent exit = %q, want old binary", got)
 	}
@@ -167,6 +266,9 @@ func TestApplyWaitsForParentExitBeforeTouchingFiles(t *testing.T) {
 	}
 	if service.startCalls != 0 {
 		t.Fatalf("start calls before parent exit = %d, want 0", service.startCalls)
+	}
+	if service.stopCalls != 1 {
+		t.Fatalf("stop calls before parent exit = %d, want 1", service.stopCalls)
 	}
 
 	close(releaseParent)
@@ -179,13 +281,14 @@ func TestApplyWaitsForParentExitBeforeTouchingFiles(t *testing.T) {
 func TestApplyParentWaitTimeoutLeavesFilesAndMarkerUntouched(t *testing.T) {
 	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
 	targetBefore := mustReadBytes(t, fixture.targetPath)
+	service := &stubServiceController{}
 
 	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
 		waitForParent: func(ctx context.Context, _ int) error {
 			<-ctx.Done()
 			return ctx.Err()
 		},
-		service:      &stubServiceController{},
+		service:      service,
 		sleep:        testSleep,
 		pollInterval: time.Millisecond,
 	})
@@ -200,6 +303,12 @@ func TestApplyParentWaitTimeoutLeavesFilesAndMarkerUntouched(t *testing.T) {
 	}
 	if _, err := os.Stat(markerPath(fixture.configPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("marker stat error = %v, want not exists", err)
+	}
+	if service.stopCalls != 1 {
+		t.Fatalf("stop calls = %d, want 1", service.stopCalls)
+	}
+	if service.startCalls != 1 {
+		t.Fatalf("start calls = %d, want old service restart", service.startCalls)
 	}
 }
 
@@ -515,6 +624,7 @@ type stubServiceController struct {
 	startErr   error
 	startHook  func(string) error
 	stopErr    error
+	stopHook   func(string) error
 }
 
 func (s *stubServiceController) Start(configPath string) error {
@@ -532,11 +642,18 @@ func (s *stubServiceController) Start(configPath string) error {
 	return err
 }
 
-func (s *stubServiceController) Stop(string) error {
+func (s *stubServiceController) Stop(configPath string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.stopCalls++
-	return s.stopErr
+	hook := s.stopHook
+	err := s.stopErr
+	s.mu.Unlock()
+	if hook != nil {
+		if hookErr := hook(configPath); hookErr != nil {
+			return hookErr
+		}
+	}
+	return err
 }
 
 func writeFileWithMode(t *testing.T, path string, data []byte, mode os.FileMode) {
