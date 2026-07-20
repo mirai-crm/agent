@@ -55,23 +55,33 @@ func applyWithDeps(ctx context.Context, req ApplyRequest, deps applyDeps) error 
 		deps.pollInterval = defaultHealthPollInterval
 	}
 
+	existingMarker, markerExists, err := tryLoadHealthMarker(markerPath(req.ConfigPath))
+	if err != nil {
+		return fmt.Errorf("inspect update journal: %w", err)
+	}
+	if markerExists && existingMarker.State == healthStateHealthy && existingMarker.Phase == phaseHealthy &&
+		existingMarker.Nonce == req.Nonce && existingMarker.Version == req.Version {
+		return cleanupHealthyApply(req, existingMarker)
+	}
+	cleanupAbortedApply := cleanupGeneratedArtifacts
+	if markerExists {
+		cleanupAbortedApply = cleanupTransientArtifacts
+	}
+
 	if err := deps.service.Stop(req.ConfigPath); err != nil {
 		cause := fmt.Errorf("stop service before update: %w", err)
-		if cleanupErr := cleanupGeneratedArtifacts(req); cleanupErr != nil {
+		if cleanupErr := cleanupAbortedApply(req); cleanupErr != nil {
 			return errors.Join(cause, cleanupErr)
 		}
 		return cause
 	}
 
 	waitCtx, cancelWait := context.WithTimeout(ctx, time.Duration(req.ParentExitTimeoutMillis)*time.Millisecond)
-	err := deps.waitForParent(waitCtx, req.ParentPID)
+	err = deps.waitForParent(waitCtx, req.ParentPID)
 	cancelWait()
 	if err != nil {
 		errs := []error{fmt.Errorf("wait for parent exit: %w", err)}
-		if startErr := deps.service.Start(req.ConfigPath); startErr != nil {
-			errs = append(errs, fmt.Errorf("restart previous service: %w", startErr))
-		}
-		if cleanupErr := cleanupGeneratedArtifacts(req); cleanupErr != nil {
+		if cleanupErr := cleanupAbortedApply(req); cleanupErr != nil {
 			errs = append(errs, cleanupErr)
 		}
 		return errors.Join(errs...)

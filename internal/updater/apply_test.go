@@ -70,6 +70,68 @@ func TestApplySwapsBinaryAndWaitsForHealthyMarker(t *testing.T) {
 	}
 }
 
+func TestApplyHealthyResumeCleansWithoutServiceLifecycleCalls(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
+	stageDir := filepath.Dir(fixture.stagedBinary)
+	fixture.request.StageDir = stageDir
+	fixture.request.RequestPath = filepath.Join(stageDir, "request.json")
+	fixture.request.HelperPath = filepath.Join(stageDir, "helper")
+	writeFileWithMode(t, fixture.request.RequestPath, []byte("{}"), 0o600)
+	writeFileWithMode(t, fixture.request.HelperPath, []byte("helper"), 0o700)
+
+	marker := healthMarker{
+		Nonce:            fixture.request.Nonce,
+		Version:          fixture.request.Version,
+		State:            healthStateHealthy,
+		Phase:            phaseHealthy,
+		TargetPath:       fixture.targetPath,
+		StagedBinaryPath: fixture.stagedBinary,
+		StagedLibUSBPath: fixture.stagedDLL,
+		BinaryBackupPath: backupPathFor(fixture.targetPath, fixture.request.Nonce),
+		DLLBackupPath:    backupPathFor(fixture.targetDLLPath, fixture.request.Nonce),
+		DLLHadOriginal:   true,
+	}
+	writeFileWithMode(t, marker.BinaryBackupPath, []byte("old-binary"), 0o751)
+	writeFileWithMode(t, marker.DLLBackupPath, []byte("old-dll"), 0o644)
+	if err := writeHealthMarker(markerPath(fixture.configPath), marker); err != nil {
+		t.Fatalf("writeHealthMarker() error = %v", err)
+	}
+	targetBefore := mustReadBytes(t, fixture.targetPath)
+	dllBefore := mustReadBytes(t, fixture.targetDLLPath)
+	waitCalled := false
+	service := &stubServiceController{}
+
+	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
+		waitForParent: func(context.Context, int) error {
+			waitCalled = true
+			return nil
+		},
+		service:      service,
+		sleep:        testSleep,
+		pollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("applyWithDeps() error = %v", err)
+	}
+	if waitCalled {
+		t.Fatal("parent wait called for already healthy update")
+	}
+	if service.stopCalls != 0 || service.startCalls != 0 {
+		t.Fatalf("service calls = stop %d, start %d; want none", service.stopCalls, service.startCalls)
+	}
+	if got := mustReadBytes(t, fixture.targetPath); !bytes.Equal(got, targetBefore) {
+		t.Fatalf("target changed: got %q, want %q", got, targetBefore)
+	}
+	if got := mustReadBytes(t, fixture.targetDLLPath); !bytes.Equal(got, dllBefore) {
+		t.Fatalf("DLL changed: got %q, want %q", got, dllBefore)
+	}
+	for _, path := range []string{marker.BinaryBackupPath, marker.DLLBackupPath, markerPath(fixture.configPath), stageDir} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleanup path %q stat error = %v, want not exists", path, err)
+		}
+	}
+}
+
 func TestApplyRollsBackWhenServiceStartFails(t *testing.T) {
 	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
 	service := &stubServiceController{startErr: errors.New("boom")}
@@ -281,6 +343,9 @@ func TestApplyWaitsForParentExitBeforeTouchingFiles(t *testing.T) {
 func TestApplyParentWaitTimeoutLeavesFilesAndMarkerUntouched(t *testing.T) {
 	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
 	targetBefore := mustReadBytes(t, fixture.targetPath)
+	dllBefore := mustReadBytes(t, fixture.targetDLLPath)
+	configBefore := mustReadBytes(t, fixture.configPath)
+	paymentsBefore := mustReadBytes(t, fixture.paymentsPath)
 	service := &stubServiceController{}
 
 	err := applyWithDeps(context.Background(), fixture.request, applyDeps{
@@ -298,6 +363,15 @@ func TestApplyParentWaitTimeoutLeavesFilesAndMarkerUntouched(t *testing.T) {
 	if got := mustReadBytes(t, fixture.targetPath); string(got) != string(targetBefore) {
 		t.Fatalf("target changed: got %q, want %q", got, targetBefore)
 	}
+	if got := mustReadBytes(t, fixture.targetDLLPath); !bytes.Equal(got, dllBefore) {
+		t.Fatalf("DLL changed: got %q, want %q", got, dllBefore)
+	}
+	if got := mustReadBytes(t, fixture.configPath); !bytes.Equal(got, configBefore) {
+		t.Fatalf("config changed: got %q, want %q", got, configBefore)
+	}
+	if got := mustReadBytes(t, fixture.paymentsPath); !bytes.Equal(got, paymentsBefore) {
+		t.Fatalf("journal changed: got %q, want %q", got, paymentsBefore)
+	}
 	if _, err := os.Stat(fixture.stagedBinary); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("staged binary stat error = %v, want cleanup", err)
 	}
@@ -307,8 +381,69 @@ func TestApplyParentWaitTimeoutLeavesFilesAndMarkerUntouched(t *testing.T) {
 	if service.stopCalls != 1 {
 		t.Fatalf("stop calls = %d, want 1", service.stopCalls)
 	}
-	if service.startCalls != 1 {
-		t.Fatalf("start calls = %d, want old service restart", service.startCalls)
+	if service.startCalls != 0 {
+		t.Fatalf("start calls = %d, want 0 while parent may still be alive", service.startCalls)
+	}
+}
+
+func TestApplyParentWaitFailurePreservesInterruptedRecoveryState(t *testing.T) {
+	fixture := newApplyFixture(t, applyFixtureOptions{withExistingDLL: true})
+	fixture.request.StageDir = filepath.Dir(fixture.stagedBinary)
+	fixture.request.RequestPath = filepath.Join(fixture.request.StageDir, "request.json")
+	fixture.request.HelperPath = filepath.Join(fixture.request.StageDir, "helper")
+	writeFileWithMode(t, fixture.request.RequestPath, []byte("{}"), 0o600)
+	writeFileWithMode(t, fixture.request.HelperPath, []byte("helper"), 0o700)
+	if err := writePendingHealthMarker(fixture.request); err != nil {
+		t.Fatalf("writePendingHealthMarker() error = %v", err)
+	}
+	marker, err := loadHealthMarker(markerPath(fixture.configPath))
+	if err != nil {
+		t.Fatalf("loadHealthMarker() error = %v", err)
+	}
+	if err := prepareBackups(&marker); err != nil {
+		t.Fatalf("prepareBackups() error = %v", err)
+	}
+	marker.Phase = phaseBackupsReady
+	if err := writeHealthMarker(markerPath(fixture.configPath), marker); err != nil {
+		t.Fatalf("writeHealthMarker() error = %v", err)
+	}
+	targetBefore := mustReadBytes(t, fixture.targetPath)
+	dllBefore := mustReadBytes(t, fixture.targetDLLPath)
+	service := &stubServiceController{}
+
+	err = applyWithDeps(context.Background(), fixture.request, applyDeps{
+		waitForParent: func(context.Context, int) error { return errors.New("parent still alive") },
+		service:       service,
+		sleep:         testSleep,
+		pollInterval:  time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "wait for parent exit") {
+		t.Fatalf("applyWithDeps() error = %v, want parent wait failure", err)
+	}
+	if service.stopCalls != 1 || service.startCalls != 0 {
+		t.Fatalf("service calls = stop %d, start %d; want stop 1, start 0", service.stopCalls, service.startCalls)
+	}
+	if got := mustReadBytes(t, fixture.targetPath); !bytes.Equal(got, targetBefore) {
+		t.Fatalf("target changed: got %q, want %q", got, targetBefore)
+	}
+	if got := mustReadBytes(t, fixture.targetDLLPath); !bytes.Equal(got, dllBefore) {
+		t.Fatalf("DLL changed: got %q, want %q", got, dllBefore)
+	}
+	for _, path := range []string{
+		markerPath(fixture.configPath),
+		marker.BinaryBackupPath,
+		marker.DLLBackupPath,
+		fixture.stagedBinary,
+		fixture.stagedDLL,
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("recovery artifact %q missing: %v", path, err)
+		}
+	}
+	for _, path := range []string{fixture.request.RequestPath, fixture.request.HelperPath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("transient artifact %q stat error = %v, want not exists", path, err)
+		}
 	}
 }
 
