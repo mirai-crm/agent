@@ -10,12 +10,14 @@ import (
 const (
 	TaskPrintCheck   = "print_check"
 	TaskPrintZReport = "print_z_report"
+	TaskPrintLabel   = "print_label"
 	TaskPurchase     = "purchase"
 )
 
-// DeviceType for receipt printers (only supported type in current scope).
+// Supported CRM device types.
 const (
 	DeviceTypeReceiptPrinter = "receipt_printer"
+	DeviceTypeLabelPrinter   = "label_printer"
 	DeviceTypePOSTerminal    = "pos_terminal"
 )
 
@@ -58,6 +60,18 @@ type PrintCheckData struct {
 // PrintZReportData is the payload of a print_z_report task.
 type PrintZReportData struct {
 	ZReportID int64 `json:"zReportId"`
+}
+
+// PrintLabelData is the payload of a print_label task. Pointer fields preserve
+// the distinction between an omitted value (apply the CRM default) and false.
+type PrintLabelData struct {
+	NomenclatureIDs []int64  `json:"nomenclatureIds"`
+	Name            *bool    `json:"name"`
+	Price           *bool    `json:"price"`
+	Barcode         *bool    `json:"barcode"`
+	WidthMM         *float64 `json:"widthMm"`
+	HeightMM        *float64 `json:"heightMm"`
+	Scale           *int     `json:"scale"`
 }
 
 // PurchaseData is the payload of a purchase task.

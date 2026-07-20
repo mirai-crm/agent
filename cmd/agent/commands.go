@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mirai-agent/mirai-agent/internal/api"
 	"github.com/mirai-agent/mirai-agent/internal/bootstrap"
 	"github.com/mirai-agent/mirai-agent/internal/config"
 	"github.com/mirai-agent/mirai-agent/internal/logx"
@@ -200,22 +201,24 @@ func printerSummary(p config.PrinterConfig) string {
 }
 
 func deviceBindingSummary(d config.DeviceConfig) string {
-	if d.Type == configDeviceTypePOSTerminal {
+	if d.Type == api.DeviceTypePOSTerminal {
 		return "terminal=" + d.POS.Address
 	}
 	return "printer=" + printerSummary(d.Printer)
 }
 
 func deviceStatusSummary(d config.DeviceConfig) string {
-	if d.Type == configDeviceTypePOSTerminal {
+	if d.Type == api.DeviceTypePOSTerminal {
 		return fmt.Sprintf("id=%d name=%q type=%s %s",
 			d.ID, d.Name, d.Type, deviceBindingSummary(d))
+	}
+	if d.Type == api.DeviceTypeLabelPrinter {
+		return fmt.Sprintf("id=%d name=%q type=%s dpi=%d gap=%gmm %s",
+			d.ID, d.Name, d.Type, d.Label.DPI, d.Label.GapMM, deviceBindingSummary(d))
 	}
 	return fmt.Sprintf("id=%d name=%q type=%s width=%d %s",
 		d.ID, d.Name, d.Type, d.WidthDots, deviceBindingSummary(d))
 }
-
-const configDeviceTypePOSTerminal = "pos_terminal"
 
 func serviceErrExit(err error, op string) int {
 	var permErr *svc.PermissionError

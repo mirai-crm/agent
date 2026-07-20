@@ -74,6 +74,7 @@ type DeviceConfig struct {
 	PNGScale  int           `toml:"png_scale"`
 	Printer   PrinterConfig `toml:"printer"`
 	POS       POSConfig     `toml:"pos"`
+	Label     LabelConfig   `toml:"label"`
 }
 
 // PrinterConfig binds a device to a physical printer. Exactly one kind's fields apply.
@@ -93,6 +94,13 @@ type POSConfig struct {
 	ConnectTimeoutSeconds   int               `toml:"connect_timeout_seconds,omitempty"`
 	OperationTimeoutSeconds int               `toml:"operation_timeout_seconds,omitempty"`
 	MerchantIDs             map[string]string `toml:"merchant_ids,omitempty"`
+}
+
+// LabelConfig controls TSPL media geometry for a label printer.
+type LabelConfig struct {
+	DPI         int     `toml:"dpi,omitempty"`
+	GapMM       float64 `toml:"gap_mm,omitempty"`
+	GapOffsetMM float64 `toml:"gap_offset_mm,omitempty"`
 }
 
 // Printer kinds.
@@ -246,6 +254,14 @@ func (c *Config) applyDefaults() {
 				dev.POS.OperationTimeoutSeconds = 180
 			}
 		}
+		if dev.Type == api.DeviceTypeLabelPrinter {
+			if dev.Label.DPI == 0 {
+				dev.Label.DPI = 203
+			}
+			if dev.Label.GapMM == 0 {
+				dev.Label.GapMM = 2
+			}
+		}
 	}
 	// Clamp poll knobs to server-accepted ranges.
 	if c.Poll.BatchSize < 1 {
@@ -290,6 +306,13 @@ func (c *Config) Validate() error {
 			}
 		case api.DeviceTypePOSTerminal:
 			if err := validatePOS(dev.POS); err != nil {
+				return fmt.Errorf("device %d (%s): %w", dev.ID, dev.Name, err)
+			}
+		case api.DeviceTypeLabelPrinter:
+			if err := validatePrinter(dev.Printer); err != nil {
+				return fmt.Errorf("device %d (%s): %w", dev.ID, dev.Name, err)
+			}
+			if err := validateLabel(dev.Label); err != nil {
 				return fmt.Errorf("device %d (%s): %w", dev.ID, dev.Name, err)
 			}
 		default:
@@ -342,6 +365,19 @@ func validatePOS(p POSConfig) error {
 		if merchantID == "" || merchantID != strings.TrimSpace(merchantID) {
 			return fmt.Errorf("pos.merchant_ids[%q] must be non-empty and not whitespace-padded", tin)
 		}
+	}
+	return nil
+}
+
+func validateLabel(l LabelConfig) error {
+	if l.DPI != 203 && l.DPI != 300 {
+		return fmt.Errorf("label.dpi must be 203 or 300")
+	}
+	if l.GapMM <= 0 {
+		return fmt.Errorf("label.gap_mm must be positive")
+	}
+	if l.GapOffsetMM < 0 {
+		return fmt.Errorf("label.gap_offset_mm must not be negative")
 	}
 	return nil
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
-// devLPPrinter writes ESC/POS bytes to a character device such as /dev/usb/lp0.
+// devLPPrinter writes raw command bytes to a character device such as /dev/usb/lp0.
 type devLPPrinter struct {
 	path string
 	f    *os.File

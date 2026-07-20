@@ -10,7 +10,7 @@ import (
 	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
-// windowsSpooler prints raw ESC/POS bytes through the Windows spooler, bypassing
+// windowsSpooler prints raw command bytes through the Windows spooler, bypassing
 // the driver (RAW datatype).
 type windowsSpooler struct {
 	name string

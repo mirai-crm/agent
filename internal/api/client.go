@@ -215,6 +215,40 @@ func (c *Client) FetchPNG(ctx context.Context, path string, widthMM, scale int) 
 	if scale > 0 {
 		q.Set("scale", strconv.Itoa(scale))
 	}
+	return c.fetchPNG(ctx, path, q)
+}
+
+// LabelPNGOptions maps print_label render options to the CRM label endpoint.
+type LabelPNGOptions struct {
+	Name, Price, Barcode bool
+	WidthMM, HeightMM    float64
+	Scale                *int
+}
+
+// FetchLabelPNG downloads one rendered product label.
+func (c *Client) FetchLabelPNG(ctx context.Context, id int64, opt LabelPNGOptions) ([]byte, error) {
+	q := url.Values{
+		"name":    {boolQuery(opt.Name)},
+		"price":   {boolQuery(opt.Price)},
+		"barcode": {boolQuery(opt.Barcode)},
+		"w":       {strconv.FormatFloat(opt.WidthMM, 'f', -1, 64)},
+		"h":       {strconv.FormatFloat(opt.HeightMM, 'f', -1, 64)},
+	}
+	if opt.Scale != nil {
+		q.Set("scale", strconv.Itoa(*opt.Scale))
+	}
+	path := fmt.Sprintf("/api/v1/devices/labels/%d/png", id)
+	return c.fetchPNG(ctx, path, q)
+}
+
+func boolQuery(value bool) string {
+	if value {
+		return "1"
+	}
+	return "0"
+}
+
+func (c *Client) fetchPNG(ctx context.Context, path string, q url.Values) ([]byte, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, path, q, nil)
 	if err != nil {
 		return nil, err

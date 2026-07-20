@@ -11,7 +11,7 @@ import (
 	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
-// cupsRawPrinter buffers the ESC/POS job and pipes it to a CUPS raw queue via
+// cupsRawPrinter buffers the raw command job and pipes it to a CUPS raw queue via
 // `lp -d <queue> -o raw`. Buffering keeps the whole job in one lp invocation,
 // which is simplest and reliable for receipt-sized data.
 type cupsRawPrinter struct {

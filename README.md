@@ -1,10 +1,10 @@
 # mirai-agent
 
 Cross-platform Go agent that prints CRM receipts and Z-reports on ESC/POS thermal
-printers and executes direct-TCP PrivatBank POS terminal purchases. It polls
-the CRM device API (long-poll), downloads the server-rendered PNG for print
-tasks, converts it to an ESC/POS raster stream (`GS v 0`), executes purchase
-tasks against bound POS terminals, and reports the result back. See
+printers, prints product labels via TSPL, and executes direct-TCP PrivatBank POS
+terminal purchases. It polls the CRM device API (long-poll), downloads
+server-rendered PNGs for print tasks, sends protocol-specific raster jobs,
+executes purchases against bound POS terminals, and reports the result back. See
 [go-mirai-agent-spec.md](go-mirai-agent-spec.md) for the full specification.
 
 ## Features
@@ -15,6 +15,7 @@ tasks against bound POS terminals, and reports the result back. See
 - Local retry/backoff for transient errors (no server-side retries).
 - Heartbeat (`/ping`) independent of task flow.
 - Printer backends: Windows spooler (RAW), CUPS raw queue, `/dev/usb/lp*`, direct USB (gousb).
+- TSPL bitmap labels on `label_printer` devices (203/300 dpi, gap media).
 - Direct TCP PrivatBank POS terminal purchases over Wi-Fi/Ethernet (`host:port`, usually port `2000`).
 - Installs as a service (systemd / Windows SCM / launchd) via `kardianos/service`.
 
@@ -93,6 +94,10 @@ sudo ./mirai-agent setup --api-url https://crm.example.com --yes \
 sudo ./mirai-agent setup --api-url https://crm.example.com --yes \
   --token dev_live_pos... --terminal 57=192.0.2.25:2000
 
+# TSPL label printer over direct USB:
+sudo ./mirai-agent setup --api-url https://crm.example.com --yes \
+  --token dev_live_label... --printer 58=usb:0x1234:0x5678
+
 # Run in foreground (usually started by the service):
 ./mirai-agent run --config /etc/mirai-agent/config.toml
 
@@ -115,6 +120,35 @@ For `pos_terminal` devices, use `--terminal deviceRef=host:port`. This agent
 supports direct TCP only (typically the terminal's Wi-Fi/Ethernet endpoint on
 port `2000`). USB/COM integrations and the genericDriverJson WebSocket bridge
 are intentionally out of scope here.
+
+### Label printers
+
+`label_printer` devices reuse the raw printer backends; direct USB uses the
+existing libusb transport:
+
+```toml
+[[devices]]
+token = "dev_live_label_TOKEN"
+id = 58
+name = "Warehouse labels"
+type = "label_printer"
+
+  [devices.printer]
+  kind = "usb"
+  vendor_id = "0x1234"
+  product_id = "0x5678"
+
+  [devices.label]
+  dpi = 203
+  gap_mm = 2
+  gap_offset_mm = 0
+```
+
+For each `nomenclatureId` in a `print_label` task the agent downloads
+`/api/v1/devices/labels/{id}/png` with the task's field and size options, fits
+the bitmap into the requested physical label, and sends one TSPL `BITMAP` job.
+The whole batch is fetched before printing. Once writing starts, failures are
+not retried automatically because that could duplicate labels.
 
 ## Configuration
 

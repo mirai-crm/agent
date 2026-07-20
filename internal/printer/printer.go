@@ -1,21 +1,22 @@
-// Package printer provides a platform-independent sink for ESC/POS bytes and
-// platform-specific implementations selected by config.
+// Package printer provides a platform-independent sink for raw printer command
+// bytes and platform-specific implementations selected by config.
 package printer
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
 	"github.com/mirai-agent/mirai-agent/internal/config"
 )
 
-// Printer is a platform-independent receiver of ESC/POS bytes.
+// Printer is a platform-independent receiver of raw printer command bytes.
 type Printer interface {
 	// Open prepares the device (opens file/USB/spooler job).
 	Open(ctx context.Context) error
-	// Write sends raw ESC/POS bytes; may be called multiple times (chunks).
+	// Write sends raw bytes; may be called multiple times (chunks).
 	Write(p []byte) (int, error)
 	// Close finishes the print job and releases resources.
 	Close() error
@@ -57,8 +58,19 @@ func WriteChunked(p Printer, data []byte) error {
 		if end > len(data) {
 			end = len(data)
 		}
-		if _, err := p.Write(data[off:end]); err != nil {
-			return err
+		chunk := data[off:end]
+		for len(chunk) > 0 {
+			n, err := p.Write(chunk)
+			if n < 0 || n > len(chunk) {
+				return io.ErrShortWrite
+			}
+			chunk = chunk[n:]
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return io.ErrShortWrite
+			}
 		}
 	}
 	return nil

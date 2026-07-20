@@ -10,7 +10,7 @@ import (
 	"github.com/google/gousb"
 )
 
-// usbPrinter writes ESC/POS bytes directly to a printer's bulk-OUT endpoint.
+// usbPrinter writes raw command bytes directly to a printer's bulk-OUT endpoint.
 type usbPrinter struct {
 	vid, pid uint16
 	serial   string

@@ -17,7 +17,7 @@ import (
 const (
 	serviceName        = "MiraiAgent"
 	serviceDisplayName = "CRM Printer and POS Agent"
-	serviceDescription = "Polls the CRM task queue for ESC/POS receipt printing and direct-TCP POS terminal purchases."
+	serviceDescription = "Polls the CRM task queue for receipt/label printing and direct-TCP POS terminal purchases."
 )
 
 // program implements service.Interface.

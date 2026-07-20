@@ -9,12 +9,14 @@ to an agent.
 ## Prerequisites
 
 - The device already exists in the CRM and you have its `secretToken`
- (Bearer token). The device `type` must be `receipt_printer` or
- `pos_terminal` — other types are rejected during setup.
+ (Bearer token). The device `type` must be `receipt_printer`, `label_printer`,
+ or `pos_terminal` — other types are rejected during setup.
 - The CRM base URL (e.g. `https://crm.example.com`).
 - For `receipt_printer`, the physical printer is connected to this machine and
  reachable through one of the supported backends (see
  [Printer kinds](#printer-kinds)).
+- For `label_printer`, the physical TSPL printer is reachable through a raw
+ printer backend. Direct USB uses the existing libusb backend.
 - For `pos_terminal`, the physical terminal is reachable over direct TCP
  (`host:port`) on the local network. The default terminal port is usually
  `2000`.
@@ -64,10 +66,12 @@ What `setup` does per token:
 
 1. `GET /api/v1/devices/info` to validate the token and read `id`/`name`/`type`.
  A `401` (invalid/archived) or a type outside
- `receipt_printer|pos_terminal` → the token is logged and skipped.
+ `receipt_printer|label_printer|pos_terminal` → the token is logged and skipped.
 2. Resolves the binding:
  - `receipt_printer`: from `--printer`, or interactively from discovered
    printers / manual entry.
+ - `label_printer`: from the same `--printer` binding; setup emits TSPL for its
+   optional test print.
  - `pos_terminal`: from `--terminal deviceRef=host:port`, or interactively by
    entering the TCP address.
 3. Writes/updates the `[[devices]]` block in `config.toml` (mode `0600`).
@@ -124,6 +128,26 @@ type = "pos_terminal"
     [devices.pos.merchant_ids]    # task tin -> terminal merchantId
     "1111111111" = "1"
     "2222222222" = "3"
+```
+
+TSPL label printer example:
+
+```toml
+[[devices]]
+token = "dev_live_LABEL_TOKEN"
+id = 82
+name = "Warehouse labels"
+type = "label_printer"
+
+  [devices.printer]
+  kind = "usb"
+  vendor_id = "0x1234"
+  product_id = "0x5678"
+
+  [devices.label]
+  dpi = 203
+  gap_mm = 2
+  gap_offset_mm = 0
 ```
 
 Then apply the change:
@@ -206,10 +230,10 @@ Operational rules:
 mirai-agent status            # lists devices, printer bindings, service state
 ```
 
-During interactive `setup` you can also run a **test print** (short ESC/POS
-init + "OK" + cut) to confirm a printer binding before committing. POS terminal
-bindings are validated by TCP address parsing during setup; there is no
-interactive purchase smoke test in `setup`.
+During interactive `setup` you can also run a protocol-appropriate **test
+print** (ESC/POS receipt or TSPL label) before committing. POS terminal bindings
+are validated by TCP address parsing; there is no interactive purchase smoke
+test.
 
 ## Removing / changing a device
 
@@ -226,6 +250,7 @@ interactive purchase smoke test in `setup`.
 Current scope is:
 
 - `receipt_printer` with tasks `print_check` and `print_z_report`
+- `label_printer` with task `print_label`
 - `pos_terminal` with task `purchase`
 
 To support more:
@@ -234,9 +259,9 @@ To support more:
   [internal/api/types.go](internal/api/types.go) and a `case` in
   `execute()` in [internal/worker/worker.go](internal/worker/worker.go). Unknown
   task names are already finalized with an `error_message` instead of crashing.
-- **New printer backend** (e.g. TSPL/label printers): add a `Kind*` constant and
-  validation in [internal/config/config.go](internal/config/config.go), a
-  backend implementing the `Printer` interface in `internal/printer/` (with the
-  appropriate `//go:build` tags), and wire it into the factory in
-  [internal/printer/printer.go](internal/printer/printer.go). The task dispatcher
-  and print core stay unchanged.
+- **New transport backend**: add a `Kind*` constant and validation in
+  [internal/config/config.go](internal/config/config.go), implement the raw
+  `Printer` interface in `internal/printer/` with appropriate build tags, and
+  wire it into [internal/printer/printer.go](internal/printer/printer.go).
+  Command languages such as ESC/POS and TSPL belong in renderer packages and
+  reuse these transports.

@@ -108,9 +108,12 @@ func Run(ctx context.Context, opt Options, install InstallFunc) (Result, error) 
 			skipped++
 			continue
 		}
-		if info.Type != api.DeviceTypeReceiptPrinter && info.Type != api.DeviceTypePOSTerminal {
-			fmt.Fprintf(opt.Out, "token skipped: device %q has unsupported type %q (need %q)\n",
-				info.Name, info.Type, api.DeviceTypeReceiptPrinter+"|"+api.DeviceTypePOSTerminal)
+		if info.Type != api.DeviceTypeReceiptPrinter &&
+			info.Type != api.DeviceTypeLabelPrinter &&
+			info.Type != api.DeviceTypePOSTerminal {
+			fmt.Fprintf(opt.Out, "token skipped: device %q has unsupported type %q (need %s)\n",
+				info.Name, info.Type,
+				api.DeviceTypeReceiptPrinter+"|"+api.DeviceTypeLabelPrinter+"|"+api.DeviceTypePOSTerminal)
 			skipped++
 			continue
 		}
@@ -123,7 +126,7 @@ func Run(ctx context.Context, opt Options, install InstallFunc) (Result, error) 
 		}
 		switch info.Type {
 		case api.DeviceTypeReceiptPrinter:
-			pc, width, err := opt.resolvePrinter(info)
+			pc, width, err := opt.resolvePrinter(info, true)
 			if err != nil {
 				fmt.Fprintf(opt.Out, "token skipped: printer binding failed for %q: %v\n", info.Name, err)
 				skipped++
@@ -131,6 +134,18 @@ func Run(ctx context.Context, opt Options, install InstallFunc) (Result, error) 
 			}
 			dev.WidthDots = width
 			dev.Printer = pc
+		case api.DeviceTypeLabelPrinter:
+			pc, _, err := opt.resolvePrinter(info, false)
+			if err != nil {
+				fmt.Fprintf(opt.Out, "token skipped: printer binding failed for %q: %v\n", info.Name, err)
+				skipped++
+				continue
+			}
+			dev.Printer = pc
+			dev.Label = config.LabelConfig{DPI: 203, GapMM: 2}
+			if idx, ok := byToken[token]; ok && cfg.Devices[idx].Type == api.DeviceTypeLabelPrinter {
+				dev.Label = cfg.Devices[idx].Label
+			}
 		case api.DeviceTypePOSTerminal:
 			pos, err := opt.resolvePOS(info)
 			if err != nil {
@@ -145,9 +160,9 @@ func Run(ctx context.Context, opt Options, install InstallFunc) (Result, error) 
 		}
 
 		// Optional test print (interactive only).
-		if info.Type == api.DeviceTypeReceiptPrinter && !opt.Yes {
+		if info.Type != api.DeviceTypePOSTerminal && !opt.Yes {
 			if yes, _ := promptYesNo(opt.In, opt.Out, fmt.Sprintf("Run a test print on %q?", info.Name)); yes {
-				if err := TestPrint(ctx, dev.Printer); err != nil {
+				if err := TestPrint(ctx, dev.Type, dev.Printer, dev.Label); err != nil {
 					fmt.Fprintf(opt.Out, "test print failed: %v\n", err)
 				} else {
 					fmt.Fprintf(opt.Out, "test print sent.\n")
@@ -194,7 +209,7 @@ func resolveBaseURL(flagURL, configURL string) string {
 
 // resolvePrinter determines the printer binding for a device, from --printer if
 // present, otherwise interactively.
-func (opt Options) resolvePrinter(info api.DeviceInfo) (config.PrinterConfig, int, error) {
+func (opt Options) resolvePrinter(info api.DeviceInfo, askWidth bool) (config.PrinterConfig, int, error) {
 	width := defaultWidthDots
 
 	if ref, ok := opt.printerRefFor(info); ok {
@@ -212,8 +227,10 @@ func (opt Options) resolvePrinter(info api.DeviceInfo) (config.PrinterConfig, in
 	if err != nil {
 		return config.PrinterConfig{}, 0, err
 	}
-	if w, err := promptWidth(opt.In, opt.Out); err == nil && w > 0 {
-		width = w
+	if askWidth {
+		if w, err := promptWidth(opt.In, opt.Out); err == nil && w > 0 {
+			width = w
+		}
 	}
 	return pc, width, nil
 }
@@ -341,8 +358,8 @@ func parsePrinterRef(ref string) (config.PrinterConfig, error) {
 	}
 }
 
-// TestPrint opens the bound printer and prints a short confirmation slip.
-func TestPrint(ctx context.Context, pc config.PrinterConfig) error {
+// TestPrint opens the bound printer and sends a protocol-appropriate test job.
+func TestPrint(ctx context.Context, deviceType string, pc config.PrinterConfig, label config.LabelConfig) error {
 	p, err := printer.New(pc)
 	if err != nil {
 		return err
@@ -350,11 +367,23 @@ func TestPrint(ctx context.Context, pc config.PrinterConfig) error {
 	if err := p.Open(ctx); err != nil {
 		return err
 	}
-	// ESC @ init, text "mirai-agent OK", feed, partial cut.
-	data := []byte{0x1B, 0x40}
-	data = append(data, []byte("mirai-agent test print OK\n")...)
-	data = append(data, []byte{0x0A, 0x0A, 0x0A, 0x0A}...)
-	data = append(data, []byte{0x1D, 0x56, 0x01}...)
+	var data []byte
+	switch deviceType {
+	case api.DeviceTypeReceiptPrinter:
+		// ESC @ init, text "mirai-agent OK", feed, partial cut.
+		data = []byte{0x1B, 0x40}
+		data = append(data, []byte("mirai-agent test print OK\n")...)
+		data = append(data, []byte{0x0A, 0x0A, 0x0A, 0x0A}...)
+		data = append(data, []byte{0x1D, 0x56, 0x01}...)
+	case api.DeviceTypeLabelPrinter:
+		data = []byte(fmt.Sprintf(
+			"SIZE 58 mm,40 mm\r\nGAP %g mm,%g mm\r\nCLS\r\nTEXT 20,20,\"0\",0,1,1,\"mirai-agent OK\"\r\nPRINT 1,1\r\n",
+			label.GapMM, label.GapOffsetMM,
+		))
+	default:
+		_ = p.Close()
+		return fmt.Errorf("test print is unsupported for device type %q", deviceType)
+	}
 	if err := printer.WriteChunked(p, data); err != nil {
 		p.Close()
 		return err

@@ -108,6 +108,12 @@ func (m *Manager) newDeviceWorker(dev config.DeviceConfig) (*deviceWorker, error
 			return nil, err
 		}
 		executor = &printerExecutor{dev: dev, client: client, printer: p}
+	case api.DeviceTypeLabelPrinter:
+		p, err := printer.New(dev.Printer)
+		if err != nil {
+			return nil, err
+		}
+		executor = newLabelExecutor(dev.Label, client, p)
 	case api.DeviceTypePOSTerminal:
 		if m.journal == nil {
 			return nil, errors.New("payment journal is not initialized")

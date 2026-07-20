@@ -80,6 +80,24 @@ png_scale = 0
 #   # serial = "..."
 
 [[devices]]
+token = "dev_live_label_123456..."
+id = 45
+name = "Warehouse labels"
+type = "label_printer"
+
+  # TSPL bytes use the same raw transport as receipt printers.
+  [devices.printer]
+  kind = "usb"
+  vendor_id = "0x1234"
+  product_id = "0x5678"
+  # serial = "..."
+
+  [devices.label]
+  dpi = 203
+  gap_mm = 2
+  gap_offset_mm = 0
+
+[[devices]]
 token = "dev_live_pos_123456..."
 id = 46
 name = "Front POS"
