@@ -7,6 +7,23 @@ import (
 	"testing"
 )
 
+func validConfigForTest() Config {
+	cfg := Default()
+	cfg.Server.BaseURL = "https://crm.example.com"
+	cfg.Devices = []DeviceConfig{{
+		Token:     "receipt-token",
+		ID:        7,
+		Name:      "Front desk",
+		Type:      "receipt_printer",
+		WidthDots: 576,
+		Printer: PrinterConfig{
+			Kind:  KindCUPSRaw,
+			Queue: "thermal_raw",
+		},
+	}}
+	return cfg
+}
+
 func TestLoadLabelPrinterDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	const source = `
@@ -60,5 +77,102 @@ func TestLabelPrinterRejectsInvalidDPI(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "label.dpi") {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestLoadDefaultsUpdateConfigWhenSectionIsOmitted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const source = `
+[server]
+base_url = "https://crm.example.com"
+
+[[devices]]
+token = "receipt-token"
+id = 7
+name = "Front desk"
+width_dots = 576
+
+  [devices.printer]
+  kind = "cups_raw"
+  queue = "thermal_raw"
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Update.Enabled {
+		t.Fatalf("Update.Enabled = %v, want true", cfg.Update.Enabled)
+	}
+	if cfg.Update.CheckIntervalHours != 6 {
+		t.Fatalf("Update.CheckIntervalHours = %d, want 6", cfg.Update.CheckIntervalHours)
+	}
+}
+
+func TestLoadPreservesExplicitlyDisabledUpdateConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const source = `
+[server]
+base_url = "https://crm.example.com"
+
+[update]
+enabled = false
+
+[[devices]]
+token = "receipt-token"
+id = 7
+name = "Front desk"
+width_dots = 576
+
+  [devices.printer]
+  kind = "cups_raw"
+  queue = "thermal_raw"
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Update.Enabled {
+		t.Fatalf("Update.Enabled = %v, want false", cfg.Update.Enabled)
+	}
+	if cfg.Update.CheckIntervalHours != 6 {
+		t.Fatalf("Update.CheckIntervalHours = %d, want 6", cfg.Update.CheckIntervalHours)
+	}
+}
+
+func TestLoadRejectsExplicitZeroUpdateIntervalWhenEnabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const source = `
+[server]
+base_url = "https://crm.example.com"
+
+[update]
+enabled = true
+check_interval_hours = 0
+
+[[devices]]
+token = "receipt-token"
+id = 7
+name = "Front desk"
+width_dots = 576
+
+  [devices.printer]
+  kind = "cups_raw"
+  queue = "thermal_raw"
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "update.check_interval_hours") {
+		t.Fatalf("Load() error = %v", err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/mirai-agent/mirai-agent/internal/config"
 	"github.com/mirai-agent/mirai-agent/internal/logx"
 	"github.com/mirai-agent/mirai-agent/internal/svc"
+	"github.com/mirai-agent/mirai-agent/internal/updater"
+	"github.com/mirai-agent/mirai-agent/internal/version"
 )
 
 // commonFlags registers --config and --log-level on a FlagSet.
@@ -110,9 +113,48 @@ func cmdRun(args []string) int {
 	logger, closeLog := setupLogger(cfg, *logLevel)
 	defer closeLog()
 
-	logger.Info("starting agent", "version", Version, "config", *configPath, "devices", len(cfg.Devices))
-	if err := svc.Run(cfg, *configPath, logger); err != nil {
+	logger.Info("starting agent", "version", version.Version, "config", *configPath, "devices", len(cfg.Devices))
+
+	absConfigPath, err := filepath.Abs(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		return exitConfig
+	}
+	startUpdater := func(ctx context.Context, mgr svc.UpdateManager, restart func()) {
+		coordinator := updater.NewCoordinator(updater.CoordinatorConfig{
+			Enabled:            cfg.Update.Enabled,
+			CheckIntervalHours: cfg.Update.CheckIntervalHours,
+			CurrentVersion:     version.Version,
+			ConfigPath:         absConfigPath,
+		}, logger, restart)
+		coordinator.Run(ctx, mgr)
+	}
+
+	if err := svc.Run(cfg, absConfigPath, logger, func() error {
+		return updater.MarkHealthy(absConfigPath, version.Version)
+	}, startUpdater); err != nil {
 		logger.Error("run exited with error", "error", err.Error())
+		return exitGeneral
+	}
+	return exitOK
+}
+
+func cmdApplyUpdate(args []string) int {
+	fs := flag.NewFlagSet("apply-update", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "apply-update: request path is required")
+		return exitUsage
+	}
+	req, err := updater.LoadApplyRequest(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "apply-update: %v\n", err)
+		return exitUsage
+	}
+	if err := updater.Apply(context.Background(), req); err != nil {
+		fmt.Fprintf(os.Stderr, "apply-update failed: %v\n", err)
 		return exitGeneral
 	}
 	return exitOK
@@ -171,6 +213,7 @@ func cmdStatus(args []string) int {
 		fmt.Println("config:       NOT FOUND")
 	} else {
 		fmt.Printf("base_url:     %s\n", cfg.Server.BaseURL)
+		fmt.Printf("update:       %s\n", updateStatusSummary(cfg.Update))
 		fmt.Printf("devices:      %d\n", len(cfg.Devices))
 		for _, d := range cfg.Devices {
 			fmt.Printf("  - %s token=%s\n", deviceStatusSummary(d), logx.TokenTag(d.Token))
@@ -183,6 +226,13 @@ func cmdStatus(args []string) int {
 		fmt.Printf("service:      %s\n", st)
 	}
 	return exitOK
+}
+
+func updateStatusSummary(u config.UpdateConfig) string {
+	if !u.Enabled {
+		return fmt.Sprintf("disabled (stable mirai-crm/agent checks every %dh when enabled)", u.CheckIntervalHours)
+	}
+	return fmt.Sprintf("enabled every %dh (stable mirai-crm/agent releases, service-only)", u.CheckIntervalHours)
 }
 
 func printerSummary(p config.PrinterConfig) string {

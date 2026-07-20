@@ -33,6 +33,14 @@ level = "info"
 # Empty -> stderr / service journal.
 path = ""
 
+[update]
+# Automatic self-update from stable mirai-crm/agent GitHub releases. Only
+# takes effect while running as an OS service (never for `mirai-agent run`
+# in the foreground); see README.md "Automatic updates" for the full
+# behavior (checksum verification, idle drain, rollback, disabling, logs).
+enabled = true
+check_interval_hours = 6
+
 # ── Devices: one block per token = one physical printer or POS terminal ──────
 
 [[devices]]

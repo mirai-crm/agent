@@ -18,6 +18,7 @@ executes purchases against bound POS terminals, and reports the result back. See
 - TSPL bitmap labels on `label_printer` devices (203/300 dpi, gap media).
 - Direct TCP PrivatBank POS terminal purchases over Wi-Fi/Ethernet (`host:port`, usually port `2000`).
 - Installs as a service (systemd / Windows SCM / launchd) via `kardianos/service`.
+- Optional service-only self-update from stable `mirai-crm/agent` GitHub releases.
 
 ## Download
 
@@ -220,6 +221,77 @@ task. Do not delete that journal while unresolved entries still exist.
 
 Refunds, withdrawals/cancellation, USB/COM terminal access, and the
 genericDriverJson WebSocket path are out of scope for this agent.
+
+## Automatic updates
+
+When installed and run as an OS service (systemd, Windows SCM, or launchd),
+the agent can update itself from stable
+[`mirai-crm/agent`](https://github.com/mirai-crm/agent/releases) GitHub
+releases.
+This is controlled by the `[update]` section of `config.toml`:
+
+```toml
+[update]
+enabled = true
+check_interval_hours = 6
+```
+
+Behavior:
+
+- **Service-only.** Automatic apply only ever runs under the OS service
+  process, which requires the same Admin/root privileges as `install` /
+  `uninstall`. It never runs for the interactive foreground `run` command
+  (e.g. a manual `./mirai-agent run` in a terminal); foreground runs skip the
+  updater entirely.
+- **Stable releases only.** The agent compares its own version against the
+  latest **stable** (non-draft, non-prerelease) GitHub release of this
+  repository and updates only to a newer stable `major.minor.patch`. A `dev`
+  build (the default for a local `go build` without `-ldflags`) never checks
+  for or applies updates.
+- **Timing.** If enabled, the agent checks once immediately after the worker
+  manager reports ready, then again every `check_interval_hours` (minimum
+  `1`). Only one check/apply attempt ever runs at a time.
+- **Supported platforms.** The same five platforms this project publishes
+  release archives for: `linux/amd64`, `linux/arm64`, `darwin/amd64`,
+  `darwin/arm64`, and `windows/amd64`.
+- **Checksum-verified download.** The agent downloads the release's
+  `checksums.txt` and the platform archive named
+  `mirai-agent_<version>_<goos>_<goarch>.tar.gz` (`.zip` on Windows), verifies
+  the archive's SHA-256 against `checksums.txt`, and only then extracts it.
+  Anything that fails before this point (metadata fetch, download, checksum
+  mismatch, archive extraction) is logged and retried on the next interval;
+  the current service keeps running and polling for CRM tasks normally.
+- **Idle drain before applying.** Once a checksum-verified update is fully
+  staged, the agent stops admitting new polls/tasks/POS replay across all
+  devices and waits for everything already in flight to finish on its own
+  (active task/poll/replay contexts are never cancelled). Only after the
+  manager is fully idle does it hand off to a detached apply helper, which
+  stops the OS service, atomically replaces the binary (and, on Windows,
+  `libusb-1.0.dll` next to it), restarts the service, and waits for it to
+  report healthy.
+- **Windows DLL.** On Windows, if the new release ships `libusb-1.0.dll`, the
+  helper replaces it alongside `mirai-agent.exe` using the same atomic
+  replace + health-check flow as the binary.
+- **Rollback.** If the restarted service does not report healthy in time, the
+  apply helper automatically restores the previous binary (and DLL, if it had
+  one) and restarts the old service; nothing is left half-updated.
+- **Never left drained.** If, after the manager has already begun draining,
+  the detached helper fails to launch (a local, not a network, problem), the
+  service requests its own restart and ends the current worker lifecycle so
+  the OS service manager (configured with `Restart=always`) relaunches it and
+  CRM polling resumes; a service must never stay permanently drained because
+  of a failed update attempt.
+- **Disabling.** Set `enabled = false` (or omit `[update]`, which is enabled
+  with `check_interval_hours = 6` by default) to turn automatic updates off
+  entirely; nothing is checked, staged, or applied.
+- **Logs.** Update activity is logged at `info`/`warn`/`error` alongside the
+  rest of the agent's logs (see `[log]`). Log lines only ever include the
+  release version and error text; they never include the download URLs'
+  credentials (GitHub release asset URLs carry none), device tokens, request
+  file contents, or the apply helper's per-attempt nonce.
+
+`mirai-agent status` reports whether `[update]` is enabled and its check
+interval alongside the rest of the config/service summary.
 
 ## Exit codes
 
