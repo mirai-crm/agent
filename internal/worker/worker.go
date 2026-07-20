@@ -28,11 +28,12 @@ type Manager struct {
 	cfg     config.Config
 	log     *slog.Logger
 	journal *paymentjournal.Journal
+	gate    *drainGate
 }
 
 // NewManager builds a Manager.
 func NewManager(cfg config.Config, configPath string, log *slog.Logger) (*Manager, error) {
-	m := &Manager{cfg: cfg, log: log}
+	m := &Manager{cfg: cfg, log: log, gate: newDrainGate()}
 	for _, dev := range cfg.Devices {
 		if dev.Type != api.DeviceTypePOSTerminal {
 			continue
@@ -45,6 +46,18 @@ func NewManager(cfg config.Config, configPath string, log *slog.Logger) (*Manage
 		break
 	}
 	return m, nil
+}
+
+// BeginDrain stops new task admission across all device workers and returns a
+// channel that closes once every task already executing has finished. Repeated
+// calls are idempotent and return the same signal channel.
+func (m *Manager) BeginDrain() <-chan struct{} {
+	return m.sharedGate().BeginDrain()
+}
+
+// IsDraining reports whether BeginDrain has already been called.
+func (m *Manager) IsDraining() bool {
+	return m.sharedGate().IsDraining()
 }
 
 // Run starts all device workers and blocks until ctx is cancelled and all
@@ -80,6 +93,7 @@ type deviceWorker struct {
 	isPOS    bool
 	journal  workerJournal
 	log      *slog.Logger
+	gate     *drainGate
 }
 
 type workerJournal interface {
@@ -134,6 +148,7 @@ func (m *Manager) newDeviceWorker(dev config.DeviceConfig) (*deviceWorker, error
 		isPOS:    dev.Type == api.DeviceTypePOSTerminal,
 		journal:  m.journal,
 		log:      log,
+		gate:     m.sharedGate(),
 	}, nil
 }
 
@@ -158,6 +173,9 @@ func (w *deviceWorker) run(ctx context.Context) {
 		return
 	}
 	w.pollLoop(workerCtx)
+	if workerCtx.Err() == nil && w.isDraining() {
+		<-workerCtx.Done()
+	}
 	cancel()
 	wg.Wait()
 }
@@ -169,7 +187,13 @@ func (w *deviceWorker) pollLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if w.isDraining() {
+			return
+		}
 		tasks, err := w.client.PollTasks(ctx, w.cfg.Poll.TimeoutSeconds, w.cfg.Poll.BatchSize)
+		if w.isDraining() {
+			return
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -204,9 +228,24 @@ func (w *deviceWorker) pollLoop(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			w.processTask(ctx, t)
+			if !w.processTaskIfAllowed(ctx, t) {
+				return
+			}
 		}
 	}
+}
+
+func (w *deviceWorker) processTaskIfAllowed(ctx context.Context, t api.Task) bool {
+	if w.gate == nil {
+		w.processTask(ctx, t)
+		return true
+	}
+	if !w.gate.BeginTask() {
+		return false
+	}
+	defer w.gate.EndTask()
+	w.processTask(ctx, t)
+	return true
 }
 
 // processTask executes one task (with local retries) and finalizes it.
@@ -502,4 +541,79 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+type drainGate struct {
+	mu            sync.Mutex
+	draining      bool
+	active        int
+	drained       chan struct{}
+	drainedClosed bool
+}
+
+func newDrainGate() *drainGate {
+	return &drainGate{}
+}
+
+func (g *drainGate) BeginTask() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.draining {
+		return false
+	}
+	g.active++
+	return true
+}
+
+func (g *drainGate) EndTask() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.active == 0 {
+		return
+	}
+	g.active--
+	if g.draining && g.active == 0 {
+		g.closeDrainedLocked()
+	}
+}
+
+func (g *drainGate) BeginDrain() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.drained == nil {
+		g.drained = make(chan struct{})
+	}
+	g.draining = true
+	if g.active == 0 {
+		g.closeDrainedLocked()
+	}
+	return g.drained
+}
+
+func (g *drainGate) IsDraining() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.draining
+}
+
+func (g *drainGate) closeDrainedLocked() {
+	if g.drainedClosed {
+		return
+	}
+	close(g.drained)
+	g.drainedClosed = true
+}
+
+func (m *Manager) sharedGate() *drainGate {
+	if m.gate == nil {
+		m.gate = newDrainGate()
+	}
+	return m.gate
+}
+
+func (w *deviceWorker) isDraining() bool {
+	return w.gate != nil && w.gate.IsDraining()
 }
