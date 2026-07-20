@@ -108,6 +108,30 @@ func Install(configPath string, log *slog.Logger) error {
 	return nil
 }
 
+// Start starts the already-registered OS service for the provided config.
+func Start(configPath string) error {
+	s, _, err := newService(config.Config{}, configPath, slog.Default())
+	if err != nil {
+		return err
+	}
+	if err := s.Start(); err != nil {
+		return wrapPermErr(err)
+	}
+	return nil
+}
+
+// Stop stops the already-registered OS service for the provided config.
+func Stop(configPath string) error {
+	s, _, err := newService(config.Config{}, configPath, slog.Default())
+	if err != nil {
+		return err
+	}
+	if err := s.Stop(); err != nil {
+		return wrapPermErr(err)
+	}
+	return nil
+}
+
 // Uninstall stops and removes the OS service.
 func Uninstall(configPath string, log *slog.Logger) error {
 	s, _, err := newService(config.Config{}, configPath, log)

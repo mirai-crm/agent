@@ -14,6 +14,7 @@ import (
 	"github.com/mirai-agent/mirai-agent/internal/config"
 	"github.com/mirai-agent/mirai-agent/internal/logx"
 	"github.com/mirai-agent/mirai-agent/internal/svc"
+	"github.com/mirai-agent/mirai-agent/internal/updater"
 	"github.com/mirai-agent/mirai-agent/internal/version"
 )
 
@@ -114,6 +115,27 @@ func cmdRun(args []string) int {
 	logger.Info("starting agent", "version", version.Version, "config", *configPath, "devices", len(cfg.Devices))
 	if err := svc.Run(cfg, *configPath, logger); err != nil {
 		logger.Error("run exited with error", "error", err.Error())
+		return exitGeneral
+	}
+	return exitOK
+}
+
+func cmdApplyUpdate(args []string) int {
+	fs := flag.NewFlagSet("apply-update", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "apply-update: request path is required")
+		return exitUsage
+	}
+	req, err := updater.LoadApplyRequest(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "apply-update: %v\n", err)
+		return exitUsage
+	}
+	if err := updater.Apply(context.Background(), req); err != nil {
+		fmt.Fprintf(os.Stderr, "apply-update failed: %v\n", err)
 		return exitGeneral
 	}
 	return exitOK

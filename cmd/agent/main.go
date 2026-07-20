@@ -49,6 +49,8 @@ func run(args []string) int {
 		return cmdSetup(rest)
 	case "run":
 		return cmdRun(rest)
+	case "apply-update":
+		return cmdApplyUpdate(rest)
 	case "install":
 		return cmdInstall(rest)
 	case "uninstall":
