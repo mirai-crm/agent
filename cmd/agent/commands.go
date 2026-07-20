@@ -14,6 +14,7 @@ import (
 	"github.com/mirai-agent/mirai-agent/internal/config"
 	"github.com/mirai-agent/mirai-agent/internal/logx"
 	"github.com/mirai-agent/mirai-agent/internal/svc"
+	"github.com/mirai-agent/mirai-agent/internal/version"
 )
 
 // commonFlags registers --config and --log-level on a FlagSet.
@@ -110,7 +111,7 @@ func cmdRun(args []string) int {
 	logger, closeLog := setupLogger(cfg, *logLevel)
 	defer closeLog()
 
-	logger.Info("starting agent", "version", Version, "config", *configPath, "devices", len(cfg.Devices))
+	logger.Info("starting agent", "version", version.Version, "config", *configPath, "devices", len(cfg.Devices))
 	if err := svc.Run(cfg, *configPath, logger); err != nil {
 		logger.Error("run exited with error", "error", err.Error())
 		return exitGeneral

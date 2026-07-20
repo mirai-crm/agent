@@ -23,6 +23,7 @@ type Config struct {
 	HTTP    HTTPConfig     `toml:"http"`
 	Retry   RetryConfig    `toml:"retry"`
 	Log     LogConfig      `toml:"log"`
+	Update  UpdateConfig   `toml:"update"`
 	Devices []DeviceConfig `toml:"devices"`
 }
 
@@ -62,6 +63,12 @@ type RetryConfig struct {
 type LogConfig struct {
 	Level string `toml:"level"`
 	Path  string `toml:"path"`
+}
+
+// UpdateConfig controls GitHub release checks for self-updates.
+type UpdateConfig struct {
+	Enabled            bool `toml:"enabled"`
+	CheckIntervalHours int  `toml:"check_interval_hours"`
 }
 
 // DeviceConfig is one logical device = one secretToken = one physical printer.
@@ -169,6 +176,10 @@ func Default() Config {
 			NetworkBackoffMaxMs: 30000,
 		},
 		Log: LogConfig{Level: "info"},
+		Update: UpdateConfig{
+			Enabled:            true,
+			CheckIntervalHours: 6,
+		},
 	}
 }
 
@@ -241,6 +252,9 @@ func (c *Config) applyDefaults() {
 	if c.Log.Level == "" {
 		c.Log.Level = d.Log.Level
 	}
+	if c.Update.CheckIntervalHours == 0 {
+		c.Update.CheckIntervalHours = d.Update.CheckIntervalHours
+	}
 	for i := range c.Devices {
 		dev := &c.Devices[i]
 		if dev.Type == "" {
@@ -282,6 +296,9 @@ func (c *Config) applyDefaults() {
 func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Server.BaseURL) == "" {
 		return fmt.Errorf("server.base_url is required")
+	}
+	if c.Update.Enabled && c.Update.CheckIntervalHours < 1 {
+		return fmt.Errorf("update.check_interval_hours must be at least 1 when update.enabled is true")
 	}
 	if len(c.Devices) == 0 {
 		return fmt.Errorf("at least one [[devices]] entry is required")

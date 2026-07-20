@@ -9,10 +9,8 @@ import (
 
 	"github.com/mirai-agent/mirai-agent/internal/config"
 	"github.com/mirai-agent/mirai-agent/internal/logx"
+	"github.com/mirai-agent/mirai-agent/internal/version"
 )
-
-// Version is set at build time via -ldflags "-X main.Version=...".
-var Version = "dev"
 
 // Exit codes (spec §5.3).
 const (
@@ -37,7 +35,7 @@ func run(args []string) int {
 	// Top-level version/help.
 	switch args[0] {
 	case "--version", "-version", "version":
-		fmt.Println("mirai-agent", Version)
+		fmt.Println("mirai-agent", version.Version)
 		return exitOK
 	case "--help", "-h", "help":
 		usage()
