@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/kardianos/service"
 
@@ -22,46 +23,105 @@ const (
 
 // program implements service.Interface.
 type program struct {
-	cfg         config.Config
-	configPath  string
-	log         *slog.Logger
-	markHealthy func() error
-	cancel      context.CancelFunc
-	done        chan struct{}
+	cfg          config.Config
+	configPath   string
+	log          *slog.Logger
+	markHealthy  func() error
+	startUpdater func(context.Context, UpdateManager)
+	cancel       context.CancelFunc
+	done         chan struct{}
 }
+
+type updaterStarter func(context.Context, UpdateManager, func())
 
 type managerRunner interface {
 	RunReady(context.Context, func()) error
+	BeginDrain() <-chan struct{}
+}
+
+// UpdateManager is the subset of the worker Manager an update coordinator
+// needs to pause task admission before an update is applied. It is declared
+// here (rather than imported from the updater package) so this package does
+// not depend on updater, which itself depends on svc to control the service
+// during apply.
+type UpdateManager interface {
+	BeginDrain() <-chan struct{}
 }
 
 func (p *program) Start(s service.Service) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 	p.done = make(chan struct{})
+	startUpdater := resolveStartUpdater(p.log, nil, p.startUpdater)
 	go func() {
 		defer close(p.done)
 		runWorker(ctx, p.log, func() (managerRunner, error) {
 			return worker.NewManager(p.cfg, p.configPath, p.log)
-		}, p.markHealthy)
+		}, p.markHealthy, startUpdater)
 	}()
 	return nil
 }
 
-func runWorker(ctx context.Context, log *slog.Logger, build func() (managerRunner, error), markHealthy func() error) {
+// resolveStartUpdater decides whether automatic update apply should run at
+// all: only under an actual OS service, never for the interactive foreground
+// `run` command. isInteractive defaults to kardianos's service.Interactive
+// but is injectable so tests can force either branch deterministically. In
+// the foreground/interactive case it logs clearly that automatic apply is
+// disabled instead of silently doing nothing.
+func resolveStartUpdater(log *slog.Logger, isInteractive func() bool, startUpdater func(context.Context, UpdateManager)) func(context.Context, UpdateManager) {
+	if isInteractive == nil {
+		isInteractive = service.Interactive
+	}
+	if isInteractive() {
+		log.Info("running interactively in the foreground; automatic update apply is disabled (install and run as a service to enable it)")
+		return nil
+	}
+	return startUpdater
+}
+
+func newRestartFunc(log *slog.Logger, requestRestart func() error, stopWorker func()) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if requestRestart != nil {
+				go func() {
+					if err := requestRestart(); err != nil {
+						log.Error("request service restart", "error", err.Error())
+					}
+				}()
+			}
+			if stopWorker != nil {
+				stopWorker()
+			}
+		})
+	}
+}
+
+func runWorker(ctx context.Context, log *slog.Logger, build func() (managerRunner, error), markHealthy func() error, startUpdater func(context.Context, UpdateManager)) {
 	mgr, err := build()
 	if err != nil {
 		log.Error("create worker manager", "error", err.Error())
 		return
 	}
+	var updaterWG sync.WaitGroup
 	ready := func() {
 		if markHealthy != nil {
 			if err := markHealthy(); err != nil {
 				log.Warn("mark updater health", "error", err.Error())
 			}
 		}
+		if startUpdater != nil {
+			updaterWG.Add(1)
+			go func() {
+				defer updaterWG.Done()
+				startUpdater(ctx, mgr)
+			}()
+		}
 	}
-	if err := mgr.RunReady(ctx, ready); err != nil {
-		log.Error("worker manager exited with error", "error", err.Error())
+	runErr := mgr.RunReady(ctx, ready)
+	updaterWG.Wait()
+	if runErr != nil {
+		log.Error("worker manager exited with error", "error", runErr.Error())
 	}
 }
 
@@ -101,13 +161,26 @@ func newService(cfg config.Config, configPath string, log *slog.Logger) (service
 }
 
 // Run runs the agent under the service manager (or in the foreground when not
-// launched as a service). It blocks until stopped.
-func Run(cfg config.Config, configPath string, log *slog.Logger, markHealthy func() error) error {
+// launched as a service). It blocks until stopped. startUpdater, if non-nil,
+// is invoked once the worker manager is ready, but only when this process is
+// actually managed by the OS service framework; it is never invoked for an
+// interactive foreground run (see resolveStartUpdater).
+func Run(cfg config.Config, configPath string, log *slog.Logger, markHealthy func() error, startUpdater updaterStarter) error {
 	s, prg, err := newService(cfg, configPath, log)
 	if err != nil {
 		return err
 	}
 	prg.markHealthy = markHealthy
+	if startUpdater != nil {
+		restart := newRestartFunc(log, s.Restart, func() {
+			if prg.cancel != nil {
+				prg.cancel()
+			}
+		})
+		prg.startUpdater = func(ctx context.Context, mgr UpdateManager) {
+			startUpdater(ctx, mgr, restart)
+		}
+	}
 	return s.Run()
 }
 

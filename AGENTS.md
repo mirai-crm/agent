@@ -245,6 +245,64 @@ test.
   restart the service. If the token is invalid/archived server-side, the worker
   logs `401` and stops serving that token on its own (other devices keep going).
 
+## Automatic updates
+
+The agent can update itself from **stable**
+[`mirai-crm/agent`](https://github.com/mirai-crm/agent/releases) GitHub
+releases while running as an installed OS service. Controlled by
+`config.toml`'s `[update]` block:
+
+```toml
+[update]
+enabled = true              # default; set false to disable entirely
+check_interval_hours = 6    # minimum 1 when enabled
+```
+
+Key behavior:
+
+- **Service-only, requires Admin/root.** Automatic apply only ever runs
+  inside the actual OS service process (the same privilege level as
+  `install`/`uninstall`). It is wired via `kardianos/service`'s interactive
+  detection (injectable in tests): the interactive foreground `run` command
+  (e.g. a manual `mirai-agent run` in a terminal) never checks for or applies
+  updates.
+- **Stable GitHub source, dev skips.** Uses this repository's latest stable
+  (non-draft, non-prerelease) release; a `dev` build (unversioned local
+  build) never checks. Supported platforms match the release matrix:
+  `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`,
+  `windows/amd64`.
+- **Timing.** One check immediately after the worker manager reports ready,
+  then one every `check_interval_hours`; checks/applies never overlap.
+- **Checksum-verified before anything irreversible.** The candidate archive
+  is downloaded and its SHA-256 verified against the release's
+  `checksums.txt` before extraction, and fully staged (binary, and on
+  Windows `libusb-1.0.dll`) before the agent touches task admission. Any
+  failure up to this point (metadata, download, checksum mismatch, extract)
+  is logged and retried next interval; the current service keeps polling.
+- **Idle drain, then apply.** Only once the update is fully staged does the
+  agent stop admitting new polls/tasks/POS replay and wait for in-flight
+  work to finish on its own (active contexts are never cancelled). It then
+  launches a detached helper (target path from `os.Executable`, config path,
+  a copy of the current executable, the staged binary/DLL, version, and a
+  secure random lowercase-hex nonce) that stops the OS service, atomically
+  replaces the binary/DLL, restarts the service, and waits for it to report
+  healthy.
+- **Rollback.** If the restarted service does not report healthy within the
+  helper's bounded timeout, it restores the previous binary/DLL and restarts
+  the old service.
+- **Never left drained.** If the helper fails to *launch* after the manager
+  has already begun draining, the service requests its own restart and ends
+  the current worker lifecycle (relying on the service's `Restart=always`
+  policy) so polling resumes; it never stays permanently drained because of a
+  failed apply.
+- **Disabling.** Set `enabled = false` to turn this off entirely.
+- **Logs.** Update log lines carry only the release version and error text —
+  never download-URL credentials (GitHub release asset URLs carry none),
+  device tokens, request file contents, or the apply helper's nonce.
+
+`mirai-agent status` reports the `[update]` setting alongside the rest of the
+config/service summary.
+
 ## Extending: new device or task types (developers)
 
 Current scope is:
