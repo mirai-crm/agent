@@ -13,6 +13,7 @@ import (
 
 	"github.com/mirai-agent/mirai-agent/internal/api"
 	"github.com/mirai-agent/mirai-agent/internal/config"
+	"github.com/mirai-agent/mirai-agent/internal/paymentjournal"
 )
 
 func TestManagerBeginDrainWaitsForActiveTask(t *testing.T) {
@@ -77,7 +78,7 @@ func TestManagerBeginDrainDeniesAdmissionAfterDrain(t *testing.T) {
 	}
 }
 
-func TestManagerBeginDrainStopsInFlightPollBatchBeforeStartingTasks(t *testing.T) {
+func TestManagerBeginDrainWaitsForAdmittedPollAndDropsReturnedBatch(t *testing.T) {
 	manager := newTestManager(t)
 	worker, client, executor := newTestWorker(manager, config.DeviceConfig{ID: 3, Name: "three"})
 
@@ -92,6 +93,11 @@ func TestManagerBeginDrainStopsInFlightPollBatchBeforeStartingTasks(t *testing.T
 
 	<-client.pollStarted
 	drained := manager.BeginDrain()
+	select {
+	case <-drained:
+		t.Fatal("drain completed while admitted poll still active")
+	default:
+	}
 	client.pollResults <- pollResult{tasks: []api.Task{testTask(31), testTask(32)}}
 
 	<-done
@@ -104,6 +110,26 @@ func TestManagerBeginDrainStopsInFlightPollBatchBeforeStartingTasks(t *testing.T
 	}
 	if got := client.finalizedIDs(); len(got) != 0 {
 		t.Fatalf("finalized task ids = %v, want none", got)
+	}
+}
+
+func TestManagerBeginDrainPreventsNewPollAdmission(t *testing.T) {
+	manager := newTestManager(t)
+	worker, client, _ := newTestWorker(manager, config.DeviceConfig{ID: 30, Name: "thirty"})
+
+	<-manager.BeginDrain()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.pollLoop(context.Background())
+	}()
+	<-done
+
+	select {
+	case <-client.pollStarted:
+		t.Fatal("PollTasks() started after drain won admission")
+	default:
 	}
 }
 
@@ -207,6 +233,75 @@ func TestManagerBeginDrainIsIdempotent(t *testing.T) {
 	<-second
 }
 
+func TestManagerBeginDrainWaitsForActiveReplay(t *testing.T) {
+	manager := newTestManager(t)
+	worker, client, _ := newTestWorker(manager, config.DeviceConfig{ID: 81, Name: "POS"})
+	worker.isPOS = true
+	journal := &stubReplayJournal{
+		entries: []paymentjournal.Entry{{
+			DeviceID: 81,
+			TaskID:   1001,
+			Data:     map[string]any{"payment": map[string]any{"status": "approved"}},
+		}},
+	}
+	worker.journal = journal
+	client.finalizeStarted = make(chan struct{}, 1)
+	client.finalizeRelease = make(chan struct{})
+
+	ctx := context.Background()
+	replayed := make(chan bool, 1)
+	go func() {
+		replayed <- worker.replayIfAllowed(ctx)
+	}()
+
+	<-client.finalizeStarted
+	drained := manager.BeginDrain()
+	select {
+	case <-drained:
+		t.Fatal("drain completed while replay finalization still active")
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("replay context cancelled after BeginDrain(): %v", err)
+	}
+
+	close(client.finalizeRelease)
+	if ok := <-replayed; !ok {
+		t.Fatal("replayIfAllowed() = false, want true")
+	}
+	<-drained
+
+	if got := journal.removedIDs(); !reflect.DeepEqual(got, []int64{1001}) {
+		t.Fatalf("removed journal task ids = %v, want [1001]", got)
+	}
+}
+
+func TestManagerBeginDrainSkipsReplayBeforeAdmission(t *testing.T) {
+	manager := newTestManager(t)
+	worker, client, _ := newTestWorker(manager, config.DeviceConfig{ID: 82, Name: "POS"})
+	worker.isPOS = true
+	journal := &stubReplayJournal{
+		entries: []paymentjournal.Entry{{
+			DeviceID: 82,
+			TaskID:   1002,
+			Data:     map[string]any{"payment": map[string]any{"status": "approved"}},
+		}},
+	}
+	worker.journal = journal
+
+	<-manager.BeginDrain()
+
+	if ok := worker.replayIfAllowed(context.Background()); !ok {
+		t.Fatal("replayIfAllowed() = false when drain skipped replay")
+	}
+	if journal.completeCalls != 0 || journal.removeCalls != 0 {
+		t.Fatalf("journal mutations after drain = complete %d, remove %d", journal.completeCalls, journal.removeCalls)
+	}
+	if got := client.finalizedIDs(); len(got) != 0 {
+		t.Fatalf("finalized task ids = %v, want none", got)
+	}
+}
+
 func TestManagerBeginDrainDoesNotRewritePaymentJournalFile(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
@@ -290,6 +385,9 @@ type stubWorkerClient struct {
 	pollStarted chan struct{}
 	pollResults chan pollResult
 
+	finalizeStarted chan struct{}
+	finalizeRelease chan struct{}
+
 	mu        sync.Mutex
 	finalized []int64
 }
@@ -308,6 +406,13 @@ func (c *stubWorkerClient) PollTasks(ctx context.Context, _ int, _ int) ([]api.T
 }
 
 func (c *stubWorkerClient) Finalize(_ context.Context, items []api.FinalizeItem) (api.FinalizeResponse, error) {
+	if c.finalizeStarted != nil {
+		c.finalizeStarted <- struct{}{}
+	}
+	if c.finalizeRelease != nil {
+		<-c.finalizeRelease
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -352,3 +457,39 @@ func (e *stubWorkerExecutor) Execute(ctx context.Context, task api.Task) (map[st
 }
 
 func (e *stubWorkerExecutor) Close() error { return nil }
+
+type stubReplayJournal struct {
+	mu sync.Mutex
+
+	entries       []paymentjournal.Entry
+	completeCalls int
+	removeCalls   int
+	removed       []int64
+}
+
+func (j *stubReplayJournal) Complete(_ int64, _ int64, _ map[string]interface{}) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.completeCalls++
+	return nil
+}
+
+func (j *stubReplayJournal) Pending(_ int64) []paymentjournal.Entry {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return append([]paymentjournal.Entry(nil), j.entries...)
+}
+
+func (j *stubReplayJournal) Remove(_ int64, taskID int64) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.removeCalls++
+	j.removed = append(j.removed, taskID)
+	return nil
+}
+
+func (j *stubReplayJournal) removedIDs() []int64 {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return append([]int64(nil), j.removed...)
+}

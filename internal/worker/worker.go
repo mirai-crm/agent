@@ -48,9 +48,9 @@ func NewManager(cfg config.Config, configPath string, log *slog.Logger) (*Manage
 	return m, nil
 }
 
-// BeginDrain stops new task admission across all device workers and returns a
-// channel that closes once every task already executing has finished. Repeated
-// calls are idempotent and return the same signal channel.
+// BeginDrain stops admission of polls, POS replay, and tasks across all device
+// workers. The returned channel closes after all previously admitted activity
+// finishes. Repeated calls are idempotent and return the same signal channel.
 func (m *Manager) BeginDrain() <-chan struct{} {
 	return m.sharedGate().BeginDrain()
 }
@@ -167,7 +167,7 @@ func (w *deviceWorker) run(ctx context.Context) {
 		w.pingLoop(workerCtx)
 	}()
 
-	if w.isPOS && !w.replay(workerCtx) {
+	if w.isPOS && !w.replayIfAllowed(workerCtx) {
 		cancel()
 		wg.Wait()
 		return
@@ -187,10 +187,13 @@ func (w *deviceWorker) pollLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if w.isDraining() {
+		if w.gate != nil && !w.gate.BeginActivity() {
 			return
 		}
 		tasks, err := w.client.PollTasks(ctx, w.cfg.Poll.TimeoutSeconds, w.cfg.Poll.BatchSize)
+		if w.gate != nil {
+			w.gate.EndActivity()
+		}
 		if w.isDraining() {
 			return
 		}
@@ -240,10 +243,10 @@ func (w *deviceWorker) processTaskIfAllowed(ctx context.Context, t api.Task) boo
 		w.processTask(ctx, t)
 		return true
 	}
-	if !w.gate.BeginTask() {
+	if !w.gate.BeginActivity() {
 		return false
 	}
-	defer w.gate.EndTask()
+	defer w.gate.EndActivity()
 	w.processTask(ctx, t)
 	return true
 }
@@ -325,6 +328,17 @@ func (w *deviceWorker) replay(ctx context.Context) bool {
 		}
 	}
 	return true
+}
+
+func (w *deviceWorker) replayIfAllowed(ctx context.Context) bool {
+	if w.gate == nil {
+		return w.replay(ctx)
+	}
+	if !w.gate.BeginActivity() {
+		return true
+	}
+	defer w.gate.EndActivity()
+	return w.replay(ctx)
 }
 
 func containsTask(ids []int64, id int64) bool {
@@ -555,7 +569,7 @@ func newDrainGate() *drainGate {
 	return &drainGate{}
 }
 
-func (g *drainGate) BeginTask() bool {
+func (g *drainGate) BeginActivity() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -566,7 +580,7 @@ func (g *drainGate) BeginTask() bool {
 	return true
 }
 
-func (g *drainGate) EndTask() {
+func (g *drainGate) EndActivity() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
