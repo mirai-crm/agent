@@ -29,7 +29,7 @@ func (w *windowsSpooler) Open(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("open spooler %q: %w", w.name, err)
 	}
-	if err := p.StartRawDocument("mirai-agent receipt"); err != nil {
+	if err := startWindowsRawDocument(p, "mirai-agent raw print"); err != nil {
 		p.Close()
 		return fmt.Errorf("start raw document: %w", err)
 	}
