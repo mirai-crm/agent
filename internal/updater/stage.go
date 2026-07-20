@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path"
@@ -313,20 +314,28 @@ func (s Stager) extractZIP(archivePath, stageDir string, plan archivePlan) (*Sta
 			return nil, err
 		}
 		mode := file.Mode()
-		if mode&os.ModeType != 0 && !mode.IsDir() {
-			return nil, fmt.Errorf("archive entry %q must be a regular file", file.Name)
-		}
 		if kind == archiveEntryDir {
+			if !mode.IsDir() {
+				return nil, fmt.Errorf("archive entry %q must be a directory", file.Name)
+			}
 			continue
 		}
-		expanded, err = addExpanded(expanded, int64(file.UncompressedSize64), s.maxExpandedBytes())
+		if !mode.IsRegular() {
+			return nil, fmt.Errorf("archive entry %q must be a regular file", file.Name)
+		}
+		if kind == archiveEntryIgnored {
+			expanded, err = addExpanded(expanded, int64(file.UncompressedSize64), s.maxExpandedBytes())
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		written, err := extractZipFile(file, stageDir, plan, kind, result, s.maxExpandedBytes()-expanded)
 		if err != nil {
 			return nil, err
 		}
-		if kind == archiveEntryIgnored {
-			continue
-		}
-		if err := extractZipFile(file, stageDir, plan, kind, result); err != nil {
+		expanded, err = addExpanded(expanded, written, s.maxExpandedBytes())
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -435,17 +444,41 @@ func addExpanded(total, size, limit int64) (int64, error) {
 	return next, nil
 }
 
-func extractZipFile(file *zip.File, stageDir string, plan archivePlan, kind archiveEntryKind, result *StageResult) error {
+func extractZipFile(file *zip.File, stageDir string, plan archivePlan, kind archiveEntryKind, result *StageResult, remaining int64) (int64, error) {
 	dstPath, err := reserveStagePath(stageDir, plan, kind, result)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	reader, err := file.Open()
 	if err != nil {
-		return fmt.Errorf("open archive entry %q: %w", file.Name, err)
+		return 0, fmt.Errorf("open archive entry %q: %w", file.Name, err)
 	}
 	defer reader.Close()
-	return writeStageFile(dstPath, reader, int64(file.UncompressedSize64), false)
+	return writeZipStageFile(dstPath, reader, file.Name, file.UncompressedSize64, remaining)
+}
+
+func writeZipStageFile(dstPath string, src io.Reader, entryName string, declared uint64, remaining int64) (int64, error) {
+	limit := remaining
+	if declared < uint64(limit) {
+		limit = int64(declared)
+	}
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	written, err := writeStageFile(dstPath, io.LimitReader(src, limit), false)
+	if written > remaining {
+		return written, fmt.Errorf("archive expanded size too large")
+	}
+	if uint64(written) > declared {
+		return written, fmt.Errorf("archive entry %q size exceeds metadata", entryName)
+	}
+	if err != nil {
+		return written, err
+	}
+	if uint64(written) != declared {
+		return written, fmt.Errorf("archive entry %q size does not match metadata", entryName)
+	}
+	return written, nil
 }
 
 func extractTarFile(tr *tar.Reader, hdr *tar.Header, stageDir string, plan archivePlan, kind archiveEntryKind, result *StageResult) error {
@@ -453,7 +486,14 @@ func extractTarFile(tr *tar.Reader, hdr *tar.Header, stageDir string, plan archi
 	if err != nil {
 		return err
 	}
-	return writeStageFile(dstPath, io.LimitReader(tr, hdr.Size), hdr.Size, true)
+	written, err := writeStageFile(dstPath, io.LimitReader(tr, hdr.Size), true)
+	if err != nil {
+		return err
+	}
+	if written != hdr.Size {
+		return fmt.Errorf("extract staged file %q: short read", filepath.Base(dstPath))
+	}
+	return nil
 }
 
 func reserveStagePath(stageDir string, plan archivePlan, kind archiveEntryKind, result *StageResult) (string, error) {
@@ -475,27 +515,24 @@ func reserveStagePath(stageDir string, plan archivePlan, kind archiveEntryKind, 
 	}
 }
 
-func writeStageFile(dstPath string, src io.Reader, size int64, executable bool) error {
+func writeStageFile(dstPath string, src io.Reader, executable bool) (int64, error) {
 	mode := os.FileMode(0o644)
 	if executable {
 		mode = 0o755
 	}
 	file, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, mode)
 	if err != nil {
-		return fmt.Errorf("create staged file %q: %w", filepath.Base(dstPath), err)
+		return 0, fmt.Errorf("create staged file %q: %w", filepath.Base(dstPath), err)
 	}
 	n, copyErr := io.Copy(file, src)
 	closeErr := file.Close()
 	if copyErr != nil {
-		return fmt.Errorf("extract staged file %q: %w", filepath.Base(dstPath), copyErr)
-	}
-	if n != size {
-		return fmt.Errorf("extract staged file %q: short read", filepath.Base(dstPath))
+		return n, fmt.Errorf("extract staged file %q: %w", filepath.Base(dstPath), copyErr)
 	}
 	if closeErr != nil {
-		return fmt.Errorf("close staged file %q: %w", filepath.Base(dstPath), closeErr)
+		return n, fmt.Errorf("close staged file %q: %w", filepath.Base(dstPath), closeErr)
 	}
-	return nil
+	return n, nil
 }
 
 func finalizeStageResult(result *StageResult, plan archivePlan) (*StageResult, error) {

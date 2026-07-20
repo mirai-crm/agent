@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -59,11 +60,13 @@ func TestStagerStageZipSuccessRequiresDLL(t *testing.T) {
 	t.Parallel()
 
 	archiveName := "mirai-agent_1.2.3_windows_amd64.zip"
+	base := strings.TrimSuffix(archiveName, ".zip")
 	payload := zipArchive(t, archiveFixture{
-		base:   strings.TrimSuffix(archiveName, ".zip"),
+		base:   base,
 		binary: "windows-binary",
 		dll:    "libusb-dll",
 		docs:   true,
+		extra:  []zipEntry{{name: base + "/", mode: os.ModeDir | 0o755}},
 	})
 	stage, _ := mustStageRelease(t, archiveName, payload, checksumFor(archiveName, payload), StageOptions{
 		StagingParent: t.TempDir(),
@@ -299,6 +302,102 @@ func TestStagerStageRejectsUnsafeZipLayout(t *testing.T) {
 	}
 }
 
+func TestStagerStageRejectsTopLevelZipPathUnlessDirectory(t *testing.T) {
+	t.Parallel()
+
+	archiveName := "mirai-agent_1.2.3_windows_amd64.zip"
+	base := strings.TrimSuffix(archiveName, ".zip")
+	tests := map[string]zipEntry{
+		"regular file at top level path": {name: base, body: []byte("not a directory")},
+		"nested directory":               {name: base + "/bin/", mode: os.ModeDir | 0o755},
+	}
+
+	for name, entry := range tests {
+		t.Run(name, func(t *testing.T) {
+			payload := zipEntriesArchive(t, []zipEntry{
+				entry,
+				{name: base + "/mirai-agent.exe", body: []byte("windows-binary")},
+				{name: base + "/libusb-1.0.dll", body: []byte("libusb-dll")},
+			})
+			_, err := stageReleaseForTest(t, archiveName, payload, checksumFor(archiveName, payload), StageOptions{
+				StagingParent: t.TempDir(),
+			}, Stager{})
+			if err == nil {
+				t.Fatal("Stage() error = nil, want layout error")
+			}
+		})
+	}
+}
+
+func TestStagerZipExpandedLimitUsesActualBytesCopied(t *testing.T) {
+	t.Parallel()
+
+	archiveName := "mirai-agent_1.2.3_windows_amd64.zip"
+	base := strings.TrimSuffix(archiveName, ".zip")
+	validPayload := zipEntriesArchive(t, []zipEntry{
+		{name: base + "/mirai-agent.exe", body: []byte(strings.Repeat("x", 32))},
+		{name: base + "/libusb-1.0.dll", body: []byte("dll")},
+	})
+	payload := setZipCentralUncompressedSize(t, validPayload, base+"/mirai-agent.exe", 1)
+
+	archivePath := filepath.Join(t.TempDir(), archiveName)
+	if err := os.WriteFile(archivePath, payload, 0o600); err != nil {
+		t.Fatalf("WriteFile(): %v", err)
+	}
+	stageDir := t.TempDir()
+	plan, err := archivePlanForRelease(archiveName)
+	if err != nil {
+		t.Fatalf("archivePlanForRelease(): %v", err)
+	}
+
+	_, err = (Stager{MaxExpandedBytes: 8}).extractZIP(archivePath, stageDir, plan)
+	if err == nil {
+		t.Fatal("extractZIP() error = nil, want size error")
+	}
+	info, statErr := os.Stat(filepath.Join(stageDir, "mirai-agent.exe"))
+	if statErr != nil {
+		t.Fatalf("Stat(): %v", statErr)
+	}
+	if info.Size() > 9 {
+		t.Fatalf("staged bytes = %d, want at most limit plus detection byte", info.Size())
+	}
+
+	stagingParent := t.TempDir()
+	_, err = stageReleaseForTest(t, archiveName, validPayload, checksumFor(archiveName, validPayload), StageOptions{
+		StagingParent: stagingParent,
+	}, Stager{MaxExpandedBytes: 8})
+	if err == nil || !strings.Contains(err.Error(), "expanded") {
+		t.Fatalf("Stage() error = %v, want expanded size error", err)
+	}
+	entries, readErr := os.ReadDir(stagingParent)
+	if readErr != nil {
+		t.Fatalf("ReadDir(): %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("staging parent entries = %d, want cleanup", len(entries))
+	}
+}
+
+func TestWriteZipStageFileBoundsActualOutput(t *testing.T) {
+	t.Parallel()
+
+	dstPath := filepath.Join(t.TempDir(), "mirai-agent.exe")
+	written, err := writeZipStageFile(dstPath, strings.NewReader(strings.Repeat("x", 32)), "mirai-agent.exe", 32, 8)
+	if err == nil || !strings.Contains(err.Error(), "expanded") {
+		t.Fatalf("writeZipStageFile() error = %v, want expanded size error", err)
+	}
+	if written != 9 {
+		t.Fatalf("written = %d, want remaining allowance plus one detection byte", written)
+	}
+	info, statErr := os.Stat(dstPath)
+	if statErr != nil {
+		t.Fatalf("Stat(): %v", statErr)
+	}
+	if info.Size() != 9 {
+		t.Fatalf("staged bytes = %d, want 9", info.Size())
+	}
+}
+
 func TestStagerStageRejectsExpandedSizeOverflow(t *testing.T) {
 	t.Parallel()
 
@@ -355,6 +454,7 @@ type archiveFixture struct {
 type zipEntry struct {
 	name string
 	body []byte
+	mode os.FileMode
 }
 
 type tarEntry struct {
@@ -477,19 +577,25 @@ func zipArchive(t *testing.T, fixture archiveFixture) []byte {
 		entries[name] = []byte(body)
 	}
 
+	var entriesInOrder []zipEntry
+	for name, body := range entries {
+		entriesInOrder = append(entriesInOrder, zipEntry{name: name, body: body})
+	}
+	entriesInOrder = append(entriesInOrder, fixture.extra...)
+	return zipEntriesArchive(t, entriesInOrder)
+}
+
+func zipEntriesArchive(t *testing.T, entries []zipEntry) []byte {
+	t.Helper()
+
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	for name, body := range entries {
-		w, err := zw.Create(name)
-		if err != nil {
-			t.Fatalf("Create(%q): %v", name, err)
+	for _, entry := range entries {
+		header := &zip.FileHeader{Name: entry.name, Method: zip.Store}
+		if entry.mode != 0 {
+			header.SetMode(entry.mode)
 		}
-		if _, err := w.Write(body); err != nil {
-			t.Fatalf("Write(%q): %v", name, err)
-		}
-	}
-	for _, entry := range fixture.extra {
-		w, err := zw.Create(entry.name)
+		w, err := zw.CreateHeader(header)
 		if err != nil {
 			t.Fatalf("Create(%q): %v", entry.name, err)
 		}
@@ -501,6 +607,36 @@ func zipArchive(t *testing.T, fixture archiveFixture) []byte {
 		t.Fatalf("zip close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+func setZipCentralUncompressedSize(t *testing.T, payload []byte, name string, size uint32) []byte {
+	t.Helper()
+
+	payload = bytes.Clone(payload)
+	for offset := 0; ; {
+		index := bytes.Index(payload[offset:], []byte("PK\x01\x02"))
+		if index < 0 {
+			break
+		}
+		index += offset
+		if len(payload)-index < 46 {
+			t.Fatal("truncated central directory header")
+		}
+		nameLen := int(binary.LittleEndian.Uint16(payload[index+28 : index+30]))
+		extraLen := int(binary.LittleEndian.Uint16(payload[index+30 : index+32]))
+		commentLen := int(binary.LittleEndian.Uint16(payload[index+32 : index+34]))
+		end := index + 46 + nameLen + extraLen + commentLen
+		if end > len(payload) {
+			t.Fatal("truncated central directory entry")
+		}
+		if string(payload[index+46:index+46+nameLen]) == name {
+			binary.LittleEndian.PutUint32(payload[index+24:index+28], size)
+			return payload
+		}
+		offset = end
+	}
+	t.Fatalf("central directory entry %q not found", name)
+	return nil
 }
 
 func truncatedServer(t *testing.T, truncatedPath string, truncatedBody []byte, okPath string, okBody []byte) *httptest.Server {
