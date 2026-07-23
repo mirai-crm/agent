@@ -5,25 +5,20 @@ package updater
 import (
 	"io"
 	"os/exec"
+	"strconv"
 	"syscall"
 )
 
-func buildHelperCommand(helperPath, requestPath string) launchedCommand {
-	return launchedCommand{
-		Path:        helperPath,
-		Args:        []string{"apply-update", requestPath},
-		SysProcAttr: &syscall.SysProcAttr{Setsid: true},
-	}
-}
-
-func startDetachedCommand(cmd launchedCommand) error {
-	execCmd := exec.Command(cmd.Path, cmd.Args...)
-	execCmd.SysProcAttr = cmd.SysProcAttr
+func startDetachedCommand(helperPath, targetPath, configPath string, parentPID int) error {
+	execCmd := exec.Command(
+		helperPath,
+		"apply-update",
+		"--target", targetPath,
+		"--config", configPath,
+		"--parent-pid", strconv.Itoa(parentPID),
+	)
+	execCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	execCmd.Stdout = io.Discard
 	execCmd.Stderr = io.Discard
 	return execCmd.Start()
-}
-
-func prepareHelperSidecarDLL(ApplyRequest, string) error {
-	return nil
 }

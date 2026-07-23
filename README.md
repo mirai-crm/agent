@@ -28,20 +28,19 @@ release is a native cgo build with the USB backend enabled:
 
 | Platform | Asset |
 | --- | --- |
-| Linux x86_64 | `mirai-agent_<version>_linux_amd64.tar.gz` |
-| Linux arm64 | `mirai-agent_<version>_linux_arm64.tar.gz` |
-| macOS Intel | `mirai-agent_<version>_darwin_amd64.tar.gz` |
-| macOS Apple Silicon | `mirai-agent_<version>_darwin_arm64.tar.gz` |
-| Windows x86_64 | `mirai-agent_<version>_windows_amd64.zip` |
+| Linux x86_64 | `mirai-agent_linux_amd64` |
+| Linux arm64 | `mirai-agent_linux_arm64` |
+| macOS Intel | `mirai-agent_darwin_amd64` |
+| macOS Apple Silicon | `mirai-agent_darwin_arm64` |
+| Windows x86_64 | `mirai-agent_windows_amd64.exe` and `libusb-1.0_windows_amd64.dll` |
 
-Verify a download against `checksums.txt` (`sha256sum -c` /
-`shasum -a 256 -c`). Notes:
+`latest.json` in each release records the version and download URLs. Notes:
 
 - **Linux/macOS** need the libusb runtime for `kind = "usb"`
   (`apt install libusb-1.0-0` / `brew install libusb`). Other backends work
-  without it.
-- **Windows** archives ship `libusb-1.0.dll` next to `mirai-agent.exe`; keep
-  them together.
+  without it. Mark the downloaded raw binary executable with `chmod +x`.
+- **Windows:** rename `libusb-1.0_windows_amd64.dll` to `libusb-1.0.dll` and
+  keep it next to `mirai-agent_windows_amd64.exe`.
 - macOS binaries are **not** signed or notarized yet; clear the quarantine
   attribute (`xattr -d com.apple.quarantine mirai-agent`) or allow it in
   System Settings on first run.
@@ -75,9 +74,10 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow runs the tests, builds all five native cgo binaries, and creates
-a GitHub Release with the archives plus `checksums.txt`. The tag (without the
-`v`) is embedded as the binary version (`mirai-agent --version`).
+The workflow runs the tests, builds all five native cgo binaries, adds the
+Windows libusb DLL, generates `latest.json`, and publishes the raw files in a
+GitHub Release. The tag (without the `v`) is embedded as the binary version
+(`mirai-agent --version`).
 
 ## Usage
 
@@ -251,30 +251,24 @@ Behavior:
 - **Timing.** If enabled, the agent checks once immediately after the worker
   manager reports ready, then again every `check_interval_hours` (minimum
   `1`). Only one check/apply attempt ever runs at a time.
-- **Supported platforms.** The same five platforms this project publishes
-  release archives for: `linux/amd64`, `linux/arm64`, `darwin/amd64`,
+- **Supported platforms.** The same five platforms this project publishes:
+  `linux/amd64`, `linux/arm64`, `darwin/amd64`,
   `darwin/arm64`, and `windows/amd64`.
-- **Checksum-verified download.** The agent downloads the release's
-  `checksums.txt` and the platform archive named
-  `mirai-agent_<version>_<goos>_<goarch>.tar.gz` (`.zip` on Windows), verifies
-  the archive's SHA-256 against `checksums.txt`, and only then extracts it.
-  Anything that fails before this point (metadata fetch, download, checksum
-  mismatch, archive extraction) is logged and retried on the next interval;
-  the current service keeps running and polling for CRM tasks normally.
-- **Idle drain before applying.** Once a checksum-verified update is fully
+- **Staged download.** The agent downloads the release's `latest.json`,
+  selects its platform, and downloads the raw binary and, on Windows, the DLL.
+  Metadata or download failures are logged and retried on the next interval;
+  the current service keeps running and polling normally.
+- **Idle drain before applying.** Once an update is fully
   staged, the agent stops admitting new polls/tasks/POS replay across all
   devices and waits for everything already in flight to finish on its own
   (active task/poll/replay contexts are never cancelled). Only after the
-  manager is fully idle does it hand off to a detached apply helper, which
-  stops the OS service, atomically replaces the binary (and, on Windows,
-  `libusb-1.0.dll` next to it), restarts the service, and waits for it to
-  report healthy.
-- **Windows DLL.** On Windows, if the new release ships `libusb-1.0.dll`, the
-  helper replaces it alongside `mirai-agent.exe` using the same atomic
-  replace + health-check flow as the binary.
-- **Rollback.** If the restarted service does not report healthy in time, the
-  apply helper automatically restores the previous binary (and DLL, if it had
-  one) and restarts the old service; nothing is left half-updated.
+  manager is fully idle does it launch the staged new binary as a detached
+  helper. The helper stops the OS service, atomically replaces the installed
+  binary and Windows `libusb-1.0.dll`, restarts the service, and removes its
+  staging directory.
+- **No rollback.** A failure after the service has stopped may require a
+  manual reinstall. Downloads complete before drain to keep this failure
+  window limited to local file replacement and service control.
 - **Never left drained.** If, after the manager has already begun draining,
   the detached helper fails to launch (a local, not a network, problem), the
   service requests its own restart and ends the current worker lifecycle so
@@ -285,10 +279,8 @@ Behavior:
   with `check_interval_hours = 6` by default) to turn automatic updates off
   entirely; nothing is checked, staged, or applied.
 - **Logs.** Update activity is logged at `info`/`warn`/`error` alongside the
-  rest of the agent's logs (see `[log]`). Log lines only ever include the
-  release version and error text; they never include the download URLs'
-  credentials (GitHub release asset URLs carry none), device tokens, request
-  file contents, or the apply helper's per-attempt nonce.
+  rest of the agent's logs (see `[log]`). Log lines include the release
+  version and error text, never device tokens or request contents.
 
 `mirai-agent status` reports whether `[update]` is enabled and its check
 interval alongside the rest of the config/service summary.

@@ -11,22 +11,24 @@ import (
 )
 
 const (
-	defaultAPIBaseURL       = "https://api.github.com"
-	defaultMaxResponseBytes = 1 << 20
-	releaseRepo             = "mirai-crm/agent"
+	latestManifestURL      = "https://github.com/mirai-crm/agent/releases/latest/download/latest.json"
+	defaultMaxManifestSize = 1 << 20
 )
 
-type Checker struct {
-	APIBaseURL       string
-	MaxResponseBytes int64
+type Release struct {
+	Version   string
+	BinaryURL string
+	LibUSBURL string
 }
 
-type Release struct {
-	Version      string
-	TagName      string
-	AssetName    string
-	AssetURL     string
-	ChecksumsURL string
+type updateManifest struct {
+	Version   string                            `json:"version"`
+	Platforms map[string]updateManifestPlatform `json:"platforms"`
+}
+
+type updateManifestPlatform struct {
+	BinaryURL string `json:"binary_url"`
+	LibUSBURL string `json:"libusb_url,omitempty"`
 }
 
 type semver struct {
@@ -36,19 +38,7 @@ type semver struct {
 	text  string
 }
 
-type releaseAPIResponse struct {
-	TagName    string            `json:"tag_name"`
-	Draft      bool              `json:"draft"`
-	Prerelease bool              `json:"prerelease"`
-	Assets     []releaseAPIAsset `json:"assets"`
-}
-
-type releaseAPIAsset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
-}
-
-func (c Checker) Check(ctx context.Context, client *http.Client, currentVersion, goos, goarch string) (*Release, error) {
+func checkRelease(ctx context.Context, client *http.Client, currentVersion, goos, goarch string) (*Release, error) {
 	if currentVersion == "dev" {
 		return nil, nil
 	}
@@ -56,107 +46,72 @@ func (c Checker) Check(ctx context.Context, client *http.Client, currentVersion,
 	if err != nil {
 		return nil, fmt.Errorf("parse current version: %w", err)
 	}
-	resp, err := c.fetchLatestRelease(ctx, client)
+	manifest, err := fetchManifest(ctx, client)
 	if err != nil {
 		return nil, err
 	}
-	latest, err := releaseFromAPI(resp, goos, goarch)
+	latest, err := parseStableSemver(manifest.Version)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse manifest version: %w", err)
 	}
 	if compareSemver(latest, current) <= 0 {
 		return nil, nil
 	}
-	assetName := releaseAssetName(latest.text, goos, goarch)
-	return &Release{
-		Version:      latest.text,
-		TagName:      "v" + latest.text,
-		AssetName:    assetName,
-		AssetURL:     assetURLByName(resp.Assets, assetName),
-		ChecksumsURL: assetURLByName(resp.Assets, "checksums.txt"),
-	}, nil
+
+	platform, ok := manifest.Platforms[goos+"/"+goarch]
+	if !ok {
+		return nil, fmt.Errorf("platform %s/%s is not available", goos, goarch)
+	}
+	if _, err := parseURL(platform.BinaryURL); err != nil {
+		return nil, fmt.Errorf("binary URL: %w", err)
+	}
+	release := &Release{
+		Version:   latest.text,
+		BinaryURL: platform.BinaryURL,
+	}
+	if goos == "windows" {
+		if _, err := parseURL(platform.LibUSBURL); err != nil {
+			return nil, fmt.Errorf("libusb URL: %w", err)
+		}
+		release.LibUSBURL = platform.LibUSBURL
+	}
+	return release, nil
 }
 
-func (c Checker) fetchLatestRelease(ctx context.Context, client *http.Client) (releaseAPIResponse, error) {
+func fetchManifest(ctx context.Context, client *http.Client) (updateManifest, error) {
 	if client == nil {
-		return releaseAPIResponse{}, fmt.Errorf("http client is required")
+		return updateManifest{}, fmt.Errorf("http client is required")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.latestReleaseURL(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestManifestURL, nil)
 	if err != nil {
-		return releaseAPIResponse{}, fmt.Errorf("build request: %w", err)
+		return updateManifest{}, fmt.Errorf("build manifest request: %w", err)
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return releaseAPIResponse{}, fmt.Errorf("request latest release: %w", err)
+		return updateManifest{}, fmt.Errorf("request update manifest: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return releaseAPIResponse{}, fmt.Errorf("latest release request failed: status %d", resp.StatusCode)
+		return updateManifest{}, fmt.Errorf("manifest request failed: status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes()+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, defaultMaxManifestSize+1))
 	if err != nil {
-		return releaseAPIResponse{}, fmt.Errorf("read latest release response: %w", err)
+		return updateManifest{}, fmt.Errorf("read update manifest: %w", err)
 	}
-	if int64(len(body)) > c.maxResponseBytes() {
-		return releaseAPIResponse{}, fmt.Errorf("latest release response too large")
+	if len(body) > defaultMaxManifestSize {
+		return updateManifest{}, fmt.Errorf("update manifest is too large")
 	}
-	var parsed releaseAPIResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return releaseAPIResponse{}, fmt.Errorf("decode latest release response: %w", err)
+	var manifest updateManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return updateManifest{}, fmt.Errorf("decode update manifest: %w", err)
 	}
-	return parsed, nil
-}
-
-func (c Checker) latestReleaseURL() string {
-	base := c.APIBaseURL
-	if strings.TrimSpace(base) == "" {
-		base = defaultAPIBaseURL
+	if strings.TrimSpace(manifest.Version) == "" {
+		return updateManifest{}, fmt.Errorf("update manifest version is required")
 	}
-	return strings.TrimRight(base, "/") + "/repos/" + releaseRepo + "/releases/latest"
-}
-
-func (c Checker) maxResponseBytes() int64 {
-	if c.MaxResponseBytes > 0 {
-		return c.MaxResponseBytes
+	if manifest.Platforms == nil {
+		return updateManifest{}, fmt.Errorf("update manifest platforms are required")
 	}
-	return defaultMaxResponseBytes
-}
-
-func releaseFromAPI(resp releaseAPIResponse, goos, goarch string) (semver, error) {
-	if resp.Draft {
-		return semver{}, fmt.Errorf("latest release is a draft")
-	}
-	if resp.Prerelease {
-		return semver{}, fmt.Errorf("latest release is a prerelease")
-	}
-	version, err := parseReleaseTag(resp.TagName)
-	if err != nil {
-		return semver{}, fmt.Errorf("parse release tag: %w", err)
-	}
-	assetName := releaseAssetName(version.text, goos, goarch)
-	assetURL := assetURLByName(resp.Assets, assetName)
-	if assetURL == "" {
-		return semver{}, fmt.Errorf("release asset %q not found", assetName)
-	}
-	if _, err := parseURL(assetURL); err != nil {
-		return semver{}, fmt.Errorf("release asset %q: %w", assetName, err)
-	}
-	checksumsURL := assetURLByName(resp.Assets, "checksums.txt")
-	if checksumsURL == "" {
-		return semver{}, fmt.Errorf("release asset %q not found", "checksums.txt")
-	}
-	if _, err := parseURL(checksumsURL); err != nil {
-		return semver{}, fmt.Errorf("release asset %q: %w", "checksums.txt", err)
-	}
-	return version, nil
-}
-
-func parseReleaseTag(tag string) (semver, error) {
-	if !strings.HasPrefix(tag, "v") {
-		return semver{}, fmt.Errorf("must start with v")
-	}
-	return parseStableSemver(strings.TrimPrefix(tag, "v"))
+	return manifest, nil
 }
 
 func parseStableSemver(s string) (semver, error) {
@@ -209,33 +164,16 @@ func compareInt(a, b int) int {
 	}
 }
 
-func releaseAssetName(version, goos, goarch string) string {
-	base := "mirai-agent_" + version + "_" + goos + "_" + goarch
-	if goos == "windows" {
-		return base + ".zip"
-	}
-	return base + ".tar.gz"
-}
-
-func assetURLByName(assets []releaseAPIAsset, want string) string {
-	for _, asset := range assets {
-		if asset.Name == want {
-			return asset.URL
-		}
-	}
-	return ""
-}
-
 func parseURL(raw string) (*url.URL, error) {
 	if strings.TrimSpace(raw) != raw || raw == "" {
-		return nil, fmt.Errorf("download url is required")
+		return nil, fmt.Errorf("download URL is required")
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("invalid download url: %w", err)
+		return nil, fmt.Errorf("invalid download URL: %w", err)
 	}
-	if u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("invalid download url")
+	if u.Scheme != "https" || u.Host == "" {
+		return nil, fmt.Errorf("download URL must use HTTPS")
 	}
 	return u, nil
 }

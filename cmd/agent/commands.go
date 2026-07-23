@@ -130,9 +130,7 @@ func cmdRun(args []string) int {
 		coordinator.Run(ctx, mgr)
 	}
 
-	if err := svc.Run(cfg, absConfigPath, logger, func() error {
-		return updater.MarkHealthy(absConfigPath, version.Version)
-	}, startUpdater); err != nil {
+	if err := svc.Run(cfg, absConfigPath, logger, startUpdater); err != nil {
 		logger.Error("run exited with error", "error", err.Error())
 		return exitGeneral
 	}
@@ -141,19 +139,17 @@ func cmdRun(args []string) int {
 
 func cmdApplyUpdate(args []string) int {
 	fs := flag.NewFlagSet("apply-update", flag.ContinueOnError)
+	targetPath := fs.String("target", "", "absolute installed executable path")
+	configPath := fs.String("config", "", "absolute config.toml path")
+	parentPID := fs.Int("parent-pid", 0, "PID of the service process being replaced")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "apply-update: request path is required")
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "apply-update: unexpected positional arguments")
 		return exitUsage
 	}
-	req, err := updater.LoadApplyRequest(fs.Arg(0))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "apply-update: %v\n", err)
-		return exitUsage
-	}
-	if err := updater.Apply(context.Background(), req); err != nil {
+	if err := updater.Apply(context.Background(), *targetPath, *configPath, *parentPID); err != nil {
 		fmt.Fprintf(os.Stderr, "apply-update failed: %v\n", err)
 		return exitGeneral
 	}

@@ -273,32 +273,27 @@ Key behavior:
   `windows/amd64`.
 - **Timing.** One check immediately after the worker manager reports ready,
   then one every `check_interval_hours`; checks/applies never overlap.
-- **Checksum-verified before anything irreversible.** The candidate archive
-  is downloaded and its SHA-256 verified against the release's
-  `checksums.txt` before extraction, and fully staged (binary, and on
-  Windows `libusb-1.0.dll`) before the agent touches task admission. Any
-  failure up to this point (metadata, download, checksum mismatch, extract)
-  is logged and retried next interval; the current service keeps polling.
+- **Downloaded before anything irreversible.** The agent downloads
+  `latest.json`, then stages the raw platform binary and, on Windows,
+  `libusb-1.0.dll` before touching task admission. Metadata or download
+  failures are logged and retried next interval; the current service keeps
+  polling.
 - **Idle drain, then apply.** Only once the update is fully staged does the
   agent stop admitting new polls/tasks/POS replay and wait for in-flight
   work to finish on its own (active contexts are never cancelled). It then
-  launches a detached helper (target path from `os.Executable`, config path,
-  a copy of the current executable, the staged binary/DLL, version, and a
-  secure random lowercase-hex nonce) that stops the OS service, atomically
-  replaces the binary/DLL, restarts the service, and waits for it to report
-  healthy.
-- **Rollback.** If the restarted service does not report healthy within the
-  helper's bounded timeout, it restores the previous binary/DLL and restarts
-  the old service.
+  launches the staged new binary as a detached helper. It stops the OS
+  service, waits for the old PID to exit, atomically replaces the installed
+  binary and Windows DLL, restarts the service, and removes staging.
+- **No rollback.** A failure after the service stops may require a manual
+  reinstall. All network work finishes before drain.
 - **Never left drained.** If the helper fails to *launch* after the manager
   has already begun draining, the service requests its own restart and ends
   the current worker lifecycle (relying on the service's `Restart=always`
   policy) so polling resumes; it never stays permanently drained because of a
   failed apply.
 - **Disabling.** Set `enabled = false` to turn this off entirely.
-- **Logs.** Update log lines carry only the release version and error text —
-  never download-URL credentials (GitHub release asset URLs carry none),
-  device tokens, request file contents, or the apply helper's nonce.
+- **Logs.** Update log lines carry the release version and error text, never
+  device tokens or request contents.
 
 `mirai-agent status` reports the `[update]` setting alongside the rest of the
 config/service summary.

@@ -3,75 +3,12 @@ package svc
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"log/slog"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestRunWorkerMarksHealthyAfterManagerConstructionBeforeRun(t *testing.T) {
-	var events []string
-	runner := &fakeManager{
-		run: func(_ context.Context, ready func()) error {
-			events = append(events, "launch")
-			ready()
-			events = append(events, "run")
-			return nil
-		},
-	}
-
-	runWorker(context.Background(), testLogger(), func() (managerRunner, error) {
-		events = append(events, "construct")
-		return runner, nil
-	}, func() error {
-		events = append(events, "healthy")
-		return nil
-	}, nil)
-
-	if want := []string{"construct", "launch", "healthy", "run"}; !reflect.DeepEqual(events, want) {
-		t.Fatalf("events = %v, want %v", events, want)
-	}
-}
-
-func TestRunWorkerDoesNotMarkHealthyWhenManagerConstructionFails(t *testing.T) {
-	marked := false
-
-	runWorker(context.Background(), testLogger(), func() (managerRunner, error) {
-		return nil, errors.New("build failed")
-	}, func() error {
-		marked = true
-		return nil
-	}, nil)
-
-	if marked {
-		t.Fatal("healthy marker written after manager construction failure")
-	}
-}
-
-func TestRunWorkerContinuesWhenHealthMarkFails(t *testing.T) {
-	ran := false
-	var logs bytes.Buffer
-
-	runWorker(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), func() (managerRunner, error) {
-		return &fakeManager{run: func(_ context.Context, ready func()) error {
-			ready()
-			ran = true
-			return nil
-		}}, nil
-	}, func() error {
-		return errors.New("marker unreadable")
-	}, nil)
-
-	if !ran {
-		t.Fatal("manager did not run after health marker failure")
-	}
-	if !strings.Contains(logs.String(), "mark updater health") || !strings.Contains(logs.String(), "marker unreadable") {
-		t.Fatalf("logs = %q, want health marker failure", logs.String())
-	}
-}
 
 func TestRunWorkerSkipsUpdaterWhenStartUpdaterIsNil(t *testing.T) {
 	runner := &fakeManager{run: func(_ context.Context, ready func()) error {
@@ -84,7 +21,7 @@ func TestRunWorkerSkipsUpdaterWhenStartUpdaterIsNil(t *testing.T) {
 		defer close(done)
 		runWorker(context.Background(), testLogger(), func() (managerRunner, error) {
 			return runner, nil
-		}, nil, nil)
+		}, nil)
 	}()
 
 	select {
@@ -95,7 +32,6 @@ func TestRunWorkerSkipsUpdaterWhenStartUpdaterIsNil(t *testing.T) {
 }
 
 func TestRunWorkerStartsUpdaterAfterReadyAndWaitsOnShutdown(t *testing.T) {
-	healthyCalled := make(chan struct{})
 	runner := &fakeManager{
 		run: func(ctx context.Context, ready func()) error {
 			ready()
@@ -113,9 +49,6 @@ func TestRunWorkerStartsUpdaterAfterReadyAndWaitsOnShutdown(t *testing.T) {
 		defer close(done)
 		runWorker(ctx, testLogger(), func() (managerRunner, error) {
 			return runner, nil
-		}, func() error {
-			close(healthyCalled)
-			return nil
 		}, func(ctx context.Context, _ UpdateManager) {
 			close(updaterStarted)
 			<-ctx.Done()
@@ -123,11 +56,6 @@ func TestRunWorkerStartsUpdaterAfterReadyAndWaitsOnShutdown(t *testing.T) {
 		})
 	}()
 
-	select {
-	case <-healthyCalled:
-	case <-time.After(time.Second):
-		t.Fatal("markHealthy was not called")
-	}
 	select {
 	case <-updaterStarted:
 	case <-time.After(time.Second):

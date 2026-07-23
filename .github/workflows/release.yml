@@ -50,16 +50,13 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          BASE="mirai-agent_${VERSION}_linux_${GOARCH}"
-          mkdir -p "dist/${BASE}"
+          mkdir -p dist
           go build -trimpath -ldflags "-s -w -X github.com/mirai-agent/mirai-agent/internal/version.Version=${VERSION}" \
-            -o "dist/${BASE}/mirai-agent" ./cmd/agent
-          cp README.md AGENTS.md config.example.toml "dist/${BASE}/"
-          tar -czf "dist/${BASE}.tar.gz" -C dist "${BASE}"
+            -o "dist/mirai-agent_linux_${GOARCH}" ./cmd/agent
       - uses: actions/upload-artifact@v4
         with:
           name: mirai-agent_linux_${{ matrix.goarch }}
-          path: dist/*.tar.gz
+          path: dist/mirai-agent_linux_${{ matrix.goarch }}
           if-no-files-found: error
 
   build-macos:
@@ -88,16 +85,13 @@ jobs:
         run: |
           export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig"
           VERSION="${GITHUB_REF_NAME#v}"
-          BASE="mirai-agent_${VERSION}_darwin_${GOARCH}"
-          mkdir -p "dist/${BASE}"
+          mkdir -p dist
           go build -trimpath -ldflags "-s -w -X github.com/mirai-agent/mirai-agent/internal/version.Version=${VERSION}" \
-            -o "dist/${BASE}/mirai-agent" ./cmd/agent
-          cp README.md AGENTS.md config.example.toml "dist/${BASE}/"
-          tar -czf "dist/${BASE}.tar.gz" -C dist "${BASE}"
+            -o "dist/mirai-agent_darwin_${GOARCH}" ./cmd/agent
       - uses: actions/upload-artifact@v4
         with:
           name: mirai-agent_darwin_${{ matrix.goarch }}
-          path: dist/*.tar.gz
+          path: dist/mirai-agent_darwin_${{ matrix.goarch }}
           if-no-files-found: error
 
   build-windows:
@@ -116,7 +110,6 @@ jobs:
           msystem: MINGW64
           path-type: inherit
           install: >-
-            zip
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-libusb
@@ -128,17 +121,16 @@ jobs:
           CC: gcc
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          BASE="mirai-agent_${VERSION}_windows_amd64"
-          mkdir -p "dist/${BASE}"
+          mkdir -p dist
           go build -trimpath -ldflags "-s -w -X github.com/mirai-agent/mirai-agent/internal/version.Version=${VERSION}" \
-            -o "dist/${BASE}/mirai-agent.exe" ./cmd/agent
-          cp /mingw64/bin/libusb-1.0.dll "dist/${BASE}/"
-          cp README.md AGENTS.md config.example.toml "dist/${BASE}/"
-          cd dist && zip -r "${BASE}.zip" "${BASE}"
+            -o "dist/mirai-agent_windows_amd64.exe" ./cmd/agent
+          cp /mingw64/bin/libusb-1.0.dll "dist/libusb-1.0_windows_amd64.dll"
       - uses: actions/upload-artifact@v4
         with:
           name: mirai-agent_windows_amd64
-          path: dist/*.zip
+          path: |
+            dist/mirai-agent_windows_amd64.exe
+            dist/libusb-1.0_windows_amd64.dll
           if-no-files-found: error
 
   release:
@@ -150,12 +142,57 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: staging
-      - name: Collect artifacts and checksums
+      - name: Collect artifacts and build manifest
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          find staging -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/ \;
-          cd dist
-          sha256sum * > checksums.txt
+          find staging -type f -exec cp {} dist/ \;
+
+          for asset in \
+            mirai-agent_linux_amd64 \
+            mirai-agent_linux_arm64 \
+            mirai-agent_darwin_amd64 \
+            mirai-agent_darwin_arm64 \
+            mirai-agent_windows_amd64.exe \
+            libusb-1.0_windows_amd64.dll
+          do
+            test -s "dist/${asset}"
+          done
+
+          VERSION="${TAG#v}"
+          BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg linux_amd64_url "${BASE_URL}/mirai-agent_linux_amd64" \
+            --arg linux_arm64_url "${BASE_URL}/mirai-agent_linux_arm64" \
+            --arg darwin_amd64_url "${BASE_URL}/mirai-agent_darwin_amd64" \
+            --arg darwin_arm64_url "${BASE_URL}/mirai-agent_darwin_arm64" \
+            --arg windows_amd64_url "${BASE_URL}/mirai-agent_windows_amd64.exe" \
+            --arg libusb_url "${BASE_URL}/libusb-1.0_windows_amd64.dll" \
+            '{
+              version: $version,
+              platforms: {
+                "linux/amd64": {
+                  binary_url: $linux_amd64_url
+                },
+                "linux/arm64": {
+                  binary_url: $linux_arm64_url
+                },
+                "darwin/amd64": {
+                  binary_url: $darwin_amd64_url
+                },
+                "darwin/arm64": {
+                  binary_url: $darwin_arm64_url
+                },
+                "windows/amd64": {
+                  binary_url: $windows_amd64_url,
+                  libusb_url: $libusb_url
+                }
+              }
+            }' > dist/latest.json
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -163,7 +200,9 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
+            mapfile -t ASSETS < <(find dist -maxdepth 1 -type f ! -name latest.json | sort)
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            gh release upload "$TAG" dist/latest.json --clobber
           else
             gh release create "$TAG" dist/* --title "$TAG" --generate-notes
           fi

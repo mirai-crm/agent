@@ -26,7 +26,6 @@ type program struct {
 	cfg          config.Config
 	configPath   string
 	log          *slog.Logger
-	markHealthy  func() error
 	startUpdater func(context.Context, UpdateManager)
 	cancel       context.CancelFunc
 	done         chan struct{}
@@ -57,7 +56,7 @@ func (p *program) Start(s service.Service) error {
 		defer close(p.done)
 		runWorker(ctx, p.log, func() (managerRunner, error) {
 			return worker.NewManager(p.cfg, p.configPath, p.log)
-		}, p.markHealthy, startUpdater)
+		}, startUpdater)
 	}()
 	return nil
 }
@@ -97,7 +96,7 @@ func newRestartFunc(log *slog.Logger, requestRestart func() error, stopWorker fu
 	}
 }
 
-func runWorker(ctx context.Context, log *slog.Logger, build func() (managerRunner, error), markHealthy func() error, startUpdater func(context.Context, UpdateManager)) {
+func runWorker(ctx context.Context, log *slog.Logger, build func() (managerRunner, error), startUpdater func(context.Context, UpdateManager)) {
 	mgr, err := build()
 	if err != nil {
 		log.Error("create worker manager", "error", err.Error())
@@ -105,11 +104,6 @@ func runWorker(ctx context.Context, log *slog.Logger, build func() (managerRunne
 	}
 	var updaterWG sync.WaitGroup
 	ready := func() {
-		if markHealthy != nil {
-			if err := markHealthy(); err != nil {
-				log.Warn("mark updater health", "error", err.Error())
-			}
-		}
 		if startUpdater != nil {
 			updaterWG.Add(1)
 			go func() {
@@ -165,12 +159,11 @@ func newService(cfg config.Config, configPath string, log *slog.Logger) (service
 // is invoked once the worker manager is ready, but only when this process is
 // actually managed by the OS service framework; it is never invoked for an
 // interactive foreground run (see resolveStartUpdater).
-func Run(cfg config.Config, configPath string, log *slog.Logger, markHealthy func() error, startUpdater updaterStarter) error {
+func Run(cfg config.Config, configPath string, log *slog.Logger, startUpdater updaterStarter) error {
 	s, prg, err := newService(cfg, configPath, log)
 	if err != nil {
 		return err
 	}
-	prg.markHealthy = markHealthy
 	if startUpdater != nil {
 		restart := newRestartFunc(log, s.Restart, func() {
 			if prg.cancel != nil {
